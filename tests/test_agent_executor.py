@@ -54,3 +54,32 @@ async def test_react_agent_uses_tool_then_returns_answer() -> None:
 
     assert response.answer == "done"
     assert "Observation: done" in response.steps
+
+
+@pytest.mark.asyncio
+async def test_react_agent_repairs_missing_echo_text() -> None:
+    """Agent should repair missing echo text and return the observation."""
+    registry = ToolRegistry()
+
+    @registry.register
+    def echo(text: str) -> str:
+        """Echo text."""
+        return text
+
+    llm_client = ScriptedLLMClient(
+        responses=(
+            '{"thought":"Echo greeting.","action":"echo","action_input":{},"final_answer":null}',
+        )
+    )
+    agent = ReActAgent(
+        llm_client=llm_client,
+        prompt_assembler=ContextAssembler(),
+        tool_registry=registry,
+        memory=WorkingMemory(),
+        max_steps=3,
+    )
+
+    response = await agent.run("ninhao")
+
+    assert response.answer == "ninhao"
+    assert "Observation: ninhao" in response.steps

@@ -32,3 +32,19 @@ async def test_tool_registry_reports_missing_tool() -> None:
 
     assert result.success is False
     assert result.error == "Tool not found: missing"
+
+
+@pytest.mark.asyncio
+async def test_tool_registry_validates_required_parameters() -> None:
+    """Missing required tool arguments should fail before calling the function."""
+    registry = ToolRegistry()
+
+    @registry.register
+    def greet(name: str) -> str:
+        """Return a greeting."""
+        return f"hello {name}"
+
+    result = await registry.invoke(ToolCall(name="greet"))
+
+    assert result.success is False
+    assert result.error == "Missing required parameter(s) for tool 'greet': name"

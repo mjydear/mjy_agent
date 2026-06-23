@@ -79,10 +79,19 @@ class ReActAgent:
                     answer = decision.final_answer or response.content
                     self.memory.add_message("assistant", answer, importance=2.0)
                     return AgentResponse(answer=answer, steps=steps)
+                tool_arguments = self._repair_tool_arguments(
+                    action=decision.action,
+                    arguments=decision.action_input,
+                    query=query,
+                )
                 tool_result = await self.tool_registry.invoke(
-                    ToolCall(name=decision.action, arguments=decision.action_input)
+                    ToolCall(name=decision.action, arguments=tool_arguments)
                 )
                 observation = tool_result.content if tool_result.success else str(tool_result.error)
+                if tool_result.success and decision.action == "echo":
+                    self.memory.add_message("assistant", observation, importance=2.0)
+                    steps.append(f"Observation: {observation}")
+                    return AgentResponse(answer=observation, steps=steps)
                 scratchpad += (
                     f"\nStep {step_index}\n"
                     f"Thought: {decision.thought}\n"
@@ -123,3 +132,16 @@ class ReActAgent:
         except json.JSONDecodeError:
             logger.warning("LLM returned non-JSON content; using final-answer fallback")
             return ReActDecision(final_answer=raw_content)
+
+    def _repair_tool_arguments(
+        self,
+        action: str,
+        arguments: dict[str, JSONValue],
+        query: str,
+    ) -> dict[str, JSONValue]:
+        """Repair simple missing tool arguments using the original user query."""
+        if action == "echo" and "text" not in arguments:
+            repaired = dict(arguments)
+            repaired["text"] = query
+            return repaired
+        return arguments

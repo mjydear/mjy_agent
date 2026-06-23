@@ -23,6 +23,7 @@ class Tool:
     name: str
     description: str
     parameters: Mapping[str, str]
+    required_parameters: tuple[str, ...]
     handler: ToolHandler
 
 
@@ -64,10 +65,16 @@ class ToolRegistry:
             name: str(parameter.annotation)
             for name, parameter in signature.parameters.items()
         }
+        required_parameters = tuple(
+            name
+            for name, parameter in signature.parameters.items()
+            if parameter.default is inspect.Parameter.empty
+        )
         tool = Tool(
             name=func.__name__,
             description=inspect.getdoc(func) or "",
             parameters=parameters,
+            required_parameters=required_parameters,
             handler=func,
         )
         self.tools[tool.name] = tool
@@ -99,6 +106,20 @@ class ToolRegistry:
                 success=False,
                 content="",
                 error=f"Tool not found: {call.name}",
+            )
+        missing_parameters = [
+            parameter
+            for parameter in tool.required_parameters
+            if parameter not in call.arguments
+        ]
+        if missing_parameters:
+            return ToolResult(
+                success=False,
+                content="",
+                error=(
+                    f"Missing required parameter(s) for tool '{call.name}': "
+                    f"{', '.join(missing_parameters)}"
+                ),
             )
         try:
             result = tool.handler(**call.arguments)

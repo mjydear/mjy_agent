@@ -6,7 +6,11 @@ import os
 from pathlib import Path
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field, PositiveInt, ValidationError
+
+# Load the project-level .env file when present without overriding existing env vars.
+load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=False)
 
 from athena.exceptions import ConfigError, ErrorCode
 

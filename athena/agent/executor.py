@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from athena.agent.base import AgentResponse
-from athena.exceptions import AgentError, ErrorCode
+from athena.exceptions import AgentError, AthenaError, ErrorCode
 from athena.infra.llm import LLMClient, LLMMessage
 from athena.memory import WorkingMemory
 from athena.prompt import ContextAssembler
@@ -94,6 +94,8 @@ class ReActAgent:
             self.memory.add_message("assistant", fallback, importance=1.0)
             return AgentResponse(answer=fallback, steps=steps)
         except AgentError:
+            raise
+        except AthenaError:
             raise
         except Exception as exc:
             logger.exception("Agent execution failed")

@@ -6,6 +6,7 @@ rich>=13.0.0
 pydantic>=2.0.0
 jinja2>=3.1.0
 python-dotenv>=1.0.0
+python-certifi-win32>=1.6.1
 PyYAML>=6.0.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0

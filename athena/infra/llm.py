@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from collections.abc import Mapping, Sequence
 from typing import Protocol, cast
 
@@ -61,8 +62,9 @@ class LiteLLMClient(BaseModel):
         try:
             return await asyncio.to_thread(self._complete_sync, messages)
         except Exception as exc:
-            logger.exception("LLM completion failed")
-            raise LLMError(ErrorCode.LLM_CALL_FAILED, str(exc)) from exc
+            message = _sanitize_error_message(str(exc))
+            logger.error("LLM completion failed: %s", message)
+            raise LLMError(ErrorCode.LLM_CALL_FAILED, message) from exc
 
     def _complete_sync(self, messages: Sequence[LLMMessage]) -> LLMResponse:
         """Run the blocking LiteLLM call in a worker thread."""
@@ -141,3 +143,11 @@ def _required_api_key_env(model: str) -> str | None:
     if normalized.startswith("deepseek/"):
         return "DEEPSEEK_API_KEY"
     return None
+
+
+def _sanitize_error_message(message: str) -> str:
+    """Redact credential-like strings from provider error messages."""
+    redacted = re.sub(r"sk-[A-Za-z0-9_\-]{8,}", "sk-***", message)
+    if "Incorrect API key" in redacted:
+        return "Incorrect API key. Please replace the key in D:\\mjy-agent\\.env."
+    return redacted

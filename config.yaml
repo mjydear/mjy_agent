@@ -1,6 +1,6 @@
 llm:
   provider: litellm
-  model: gpt-4o-mini
+  model: openai/chatgptplus-0.3x
   temperature: 0.2
   max_tokens: 1024
 memory:

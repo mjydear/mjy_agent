@@ -1,0 +1,121 @@
+"""LLM gateway abstractions and LiteLLM implementation."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import Mapping, Sequence
+from typing import Protocol, cast
+
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt
+
+from athena.exceptions import ErrorCode, LLMError
+
+logger = logging.getLogger(__name__)
+
+
+class LLMMessage(BaseModel):
+    """A chat message sent to the LLM gateway."""
+
+    role: str
+    content: str
+
+
+class LLMResponse(BaseModel):
+    """Normalized LLM response used by Athena internals."""
+
+    content: str
+    model: str
+    usage: Mapping[str, int] = Field(default_factory=dict)
+
+
+class LLMClient(Protocol):
+    """Protocol for asynchronous LLM clients."""
+
+    async def complete(self, messages: Sequence[LLMMessage]) -> LLMResponse:
+        """Return a completion for the provided chat messages."""
+
+
+class LiteLLMClient(BaseModel):
+    """LiteLLM-backed client with a provider-neutral Athena interface."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    model: str
+    temperature: float = 0.2
+    max_tokens: PositiveInt = 1024
+
+    async def complete(self, messages: Sequence[LLMMessage]) -> LLMResponse:
+        """Call LiteLLM without blocking the event loop.
+
+        Args:
+            messages: Ordered chat messages.
+
+        Returns:
+            Normalized LLM response.
+
+        Raises:
+            LLMError: If LiteLLM cannot be imported or the call fails.
+        """
+        try:
+            return await asyncio.to_thread(self._complete_sync, messages)
+        except Exception as exc:
+            logger.exception("LLM completion failed")
+            raise LLMError(ErrorCode.LLM_CALL_FAILED, str(exc)) from exc
+
+    def _complete_sync(self, messages: Sequence[LLMMessage]) -> LLMResponse:
+        """Run the blocking LiteLLM call in a worker thread."""
+        from litellm import completion
+
+        payload = [message.model_dump() for message in messages]
+        raw_response = completion(
+            model=self.model,
+            messages=payload,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+        )
+        response_map = cast(Mapping[str, object], raw_response)
+        choices = cast(Sequence[Mapping[str, object]], response_map.get("choices", []))
+        if not choices:
+            raise LLMError(ErrorCode.LLM_CALL_FAILED, "LLM returned no choices")
+        first_choice = choices[0]
+        message = cast(Mapping[str, object], first_choice.get("message", {}))
+        content = str(message.get("content", ""))
+        usage_map = cast(Mapping[str, object], response_map.get("usage", {}))
+        usage = {
+            str(key): int(value)
+            for key, value in usage_map.items()
+            if isinstance(value, int)
+        }
+        return LLMResponse(content=content, model=self.model, usage=usage)
+
+
+class LLMClientFactory:
+    """Factory for creating provider-neutral LLM clients."""
+
+    @staticmethod
+    def create(provider: str, model: str, temperature: float, max_tokens: int) -> LLMClient:
+        """Create an LLM client.
+
+        Args:
+            provider: Provider name. Only ``litellm`` is supported in MVP.
+            model: Model identifier accepted by LiteLLM.
+            temperature: Sampling temperature.
+            max_tokens: Maximum output tokens.
+
+        Returns:
+            An asynchronous LLM client.
+
+        Raises:
+            LLMError: If provider is unsupported.
+        """
+        if provider != "litellm":
+            raise LLMError(
+                ErrorCode.LLM_CALL_FAILED,
+                f"Unsupported LLM provider: {provider}",
+            )
+        return LiteLLMClient(
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )

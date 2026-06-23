@@ -1,0 +1,12 @@
+llm:
+  provider: litellm
+  model: gpt-4o-mini
+  temperature: 0.2
+  max_tokens: 1024
+memory:
+  working_max_tokens: 8000
+  vector_top_k: 5
+agent:
+  max_steps: 6
+logging:
+  level: INFO

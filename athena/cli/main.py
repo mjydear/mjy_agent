@@ -9,6 +9,7 @@ import typer
 
 from athena.agent import ReActAgent
 from athena.config import load_settings
+from athena.exceptions import AthenaError
 from athena.infra.llm import LLMClientFactory
 from athena.logging import configure_logging
 from athena.memory import WorkingMemory
@@ -53,22 +54,33 @@ def chat(
     config: Path | None = typer.Option(None, "--config", "-c", help="Path to config.yaml."),
 ) -> None:
     """Run a single Athena chat request."""
-    agent = build_agent(config)
-    response = asyncio.run(agent.run(query))
-    typer.echo(response.answer)
+    try:
+        agent = build_agent(config)
+        response = asyncio.run(agent.run(query))
+        typer.echo(response.answer)
+    except AthenaError as exc:
+        typer.secho(f"Athena error [{exc.code}]: {exc.message}", fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
 
 
 @app.command()
 def start() -> None:
     """Start an interactive MVP session."""
-    agent = build_agent(None)
+    try:
+        agent = build_agent(None)
+    except AthenaError as exc:
+        typer.secho(f"Athena error [{exc.code}]: {exc.message}", fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
     typer.echo("Athena Agent MVP session. Type 'exit' to quit.")
     while True:
         query = typer.prompt("You")
         if query.strip().lower() in {"exit", "quit"}:
             break
-        response = asyncio.run(agent.run(query))
-        typer.echo(f"Athena: {response.answer}")
+        try:
+            response = asyncio.run(agent.run(query))
+            typer.echo(f"Athena: {response.answer}")
+        except AthenaError as exc:
+            typer.secho(f"Athena error [{exc.code}]: {exc.message}", fg=typer.colors.RED)
 
 
 def main() -> None:

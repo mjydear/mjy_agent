@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import Mapping, Sequence
 from typing import Protocol, cast
 
@@ -114,8 +115,29 @@ class LLMClientFactory:
                 ErrorCode.LLM_CALL_FAILED,
                 f"Unsupported LLM provider: {provider}",
             )
+        required_env = _required_api_key_env(model)
+        if required_env and not os.getenv(required_env):
+            raise LLMError(
+                ErrorCode.LLM_CALL_FAILED,
+                (
+                    f"Missing credentials for model '{model}'. Set {required_env} "
+                    "in your PowerShell session or in D:\\mjy-agent\\.env."
+                ),
+            )
         return LiteLLMClient(
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
         )
+
+
+def _required_api_key_env(model: str) -> str | None:
+    """Return the expected API-key environment variable for known models."""
+    normalized = model.lower()
+    if normalized.startswith(("gpt-", "o1", "o3", "o4", "openai/")):
+        return "OPENAI_API_KEY"
+    if normalized.startswith("claude-"):
+        return "ANTHROPIC_API_KEY"
+    if normalized.startswith("deepseek/"):
+        return "DEEPSEEK_API_KEY"
+    return None

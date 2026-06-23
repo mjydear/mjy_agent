@@ -1,6 +1,6 @@
 llm:
   provider: litellm
-  model: openai/chatgptplus-0.3x
+  model: deepseek/deepseek-chat
   temperature: 0.2
   max_tokens: 1024
 memory:

@@ -84,12 +84,7 @@ class LiteLLMClient(BaseModel):
         first_choice = choices[0]
         message = cast(Mapping[str, object], first_choice.get("message", {}))
         content = str(message.get("content", ""))
-        usage_map = cast(Mapping[str, object], response_map.get("usage", {}))
-        usage = {
-            str(key): int(value)
-            for key, value in usage_map.items()
-            if isinstance(value, int)
-        }
+        usage = _parse_usage(response_map.get("usage", {}))
         return LLMResponse(content=content, model=self.model, usage=usage)
 
 
@@ -117,6 +112,7 @@ class LLMClientFactory:
                 ErrorCode.LLM_CALL_FAILED,
                 f"Unsupported LLM provider: {provider}",
             )
+        _apply_provider_env_aliases(model)
         required_env = _required_api_key_env(model)
         if required_env and not os.getenv(required_env):
             raise LLMError(
@@ -145,9 +141,38 @@ def _required_api_key_env(model: str) -> str | None:
     return None
 
 
+def _apply_provider_env_aliases(model: str) -> None:
+    """Map compatible API-key environment variables for known providers."""
+    normalized = model.lower()
+    if normalized.startswith("deepseek/") and not os.getenv("DEEPSEEK_API_KEY"):
+        openai_key = os.getenv("OPENAI_API_KEY")
+        if openai_key:
+            os.environ["DEEPSEEK_API_KEY"] = openai_key
+
+
 def _sanitize_error_message(message: str) -> str:
     """Redact credential-like strings from provider error messages."""
     redacted = re.sub(r"sk-[A-Za-z0-9_\-]{8,}", "sk-***", message)
     if "Incorrect API key" in redacted:
         return "Incorrect API key. Please replace the key in D:\\mjy-agent\\.env."
     return redacted
+
+
+def _parse_usage(raw_usage: object) -> dict[str, int]:
+    """Normalize LiteLLM usage data across providers."""
+    if isinstance(raw_usage, Mapping):
+        usage_items = raw_usage.items()
+    elif hasattr(raw_usage, "model_dump"):
+        dumped = raw_usage.model_dump()
+        usage_items = dumped.items() if isinstance(dumped, Mapping) else ()
+    else:
+        usage_items = (
+            (name, getattr(raw_usage, name))
+            for name in ("prompt_tokens", "completion_tokens", "total_tokens")
+            if hasattr(raw_usage, name)
+        )
+    return {
+        str(key): int(value)
+        for key, value in usage_items
+        if isinstance(value, int)
+    }

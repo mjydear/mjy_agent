@@ -28,9 +28,10 @@
 from __future__ import annotations  # 💡 学习提示：支持类型注解前向引用，全项目统一风格
 
 import logging
-from collections.abc import Sequence
+import math
+from collections.abc import Callable, Sequence
 
-from pydantic import BaseModel, Field, PositiveInt
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt
 
 logger = logging.getLogger(__name__)  # 💡 学习提示：日志显示 "athena.memory.working"，方便追踪哪些消息被剪枝了
 
@@ -80,6 +81,7 @@ class Message(BaseModel):
     # 调用方可以传 2.0 表示"重要，尽量保留"，传 0.5 表示"可随时丢弃"。
     # 这个浮点数设计比布尔值（重要/不重要）更灵活，支持细粒度的优先级排序。
     importance: float = 1.0
+    compressed: bool = False
 
 
 # ============================================================
@@ -122,14 +124,18 @@ class WorkingMemory(BaseModel):
         # assistant: 北京今天晴天
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     # 💡 学习提示：PositiveInt 是 Pydantic 的约束类型，确保 max_tokens > 0，
     # 如果传入 0 或 -1 会在创建时立刻报错，而不是等到真正使用时才发现
     max_tokens: PositiveInt = 8000
+    compression_threshold: float = 0.85
+    summarizer: Callable[[Sequence[Message]], str] | None = Field(default=None, exclude=True)
     # 💡 学习提示：Field(default_factory=list) 避免所有实例共享同一个列表对象，
     # 这是 Python 可变默认值的经典陷阱，Pydantic 通过 factory 彻底规避
     messages: list[Message] = Field(default_factory=list)
 
-    def add_message(self, role: str, content: str, importance: float = 1.0) -> None:
+    def add_message(self, role: str, content: str, importance: float | None = None) -> None:
         """
         向记忆中添加一条新消息，并在必要时自动剪枝。
 
@@ -158,7 +164,10 @@ class WorkingMemory(BaseModel):
             memory.add_message("assistant", "你好！有什么可以帮你？")
             # 此时 len(memory.messages) == 2
         """
-        self.messages.append(Message(role=role, content=content, importance=importance))
+        role = self._validate_role(role)
+        content = self._validate_content(content)
+        scored_importance = self._score_importance(role, content, importance)
+        self.messages.append(Message(role=role, content=content, importance=scored_importance))
         # 💡 学习提示：每次加消息后都检查一次是否需要剪枝，
         # 而不是等到读取记忆时才检查。"写时剪枝"确保记忆始终在预算内，
         # 不会在读取时产生意外的延迟。
@@ -266,6 +275,11 @@ class WorkingMemory(BaseModel):
         - range(len-1) 永远排除最后一条（刚加入的最新消息），确保它不会被立刻删除
         - len > 1 保证至少保留 1 条消息，防止死循环或完全清空记忆
         """
+        while self._estimated_tokens() > int(self.max_tokens * self.compression_threshold) and len(self.messages) > 1:
+            if self._compress_one_message():
+                continue
+            break
+
         while self._estimated_tokens() > self.max_tokens and len(self.messages) > 1:
             # 💡 学习提示：range(len(self.messages) - 1) 生成索引 [0, 1, ..., n-2]，
             # 有意排除最后一条消息（index = n-1），即刚刚加入的最新消息永远不会被删除。
@@ -282,6 +296,33 @@ class WorkingMemory(BaseModel):
             # 💡 学习提示：用 DEBUG 级别记录日志，而不是 INFO 或 WARNING，
             # 因为剪枝是预期行为，不是警告；只在调试时才需要关注哪些消息被删了
             logger.debug("Pruned working-memory message role=%s", removed.role)
+
+    def _compress_one_message(self) -> bool:
+        candidates = [
+            index
+            for index, message in enumerate(self.messages[:-1])
+            if not message.compressed and self._estimate_message_tokens(message) > 8
+        ]
+        if not candidates:
+            return False
+
+        target_index = min(
+            candidates,
+            key=lambda index: (self.messages[index].importance, index),
+        )
+        target = self.messages[target_index]
+        summary = self._summarize_messages([target])
+        if self._estimate_text_tokens(summary) >= self._estimate_message_tokens(target):
+            return False
+
+        self.messages[target_index] = Message(
+            role=target.role,
+            content=summary,
+            importance=max(target.importance, 0.8),
+            compressed=True,
+        )
+        logger.debug("Compressed working-memory message role=%s", target.role)
+        return True
 
     def _estimated_tokens(self) -> int:
         """
@@ -324,9 +365,53 @@ class WorkingMemory(BaseModel):
         """
         # 💡 学习提示：sum() + 生成器表达式比 for 循环累加更 Pythonic，
         # 而且性能稍好（sum 在 C 层实现，不需要每次回到 Python 层累加）
-        return sum(max(1, len(message.content) // 4) for message in self.messages)
+        return sum(self._estimate_message_tokens(message) for message in self.messages)
         # 💡 学习提示：max(1, ...) 确保即使 content 是空字符串（len=0），
         # 每条消息也至少贡献 1 个估算 Token，防止"零长度消息无限堆积"
+
+    def _estimate_message_tokens(self, message: Message) -> int:
+        return self._estimate_text_tokens(message.content)
+
+    def _estimate_text_tokens(self, text: str) -> int:
+        return max(1, len(text) // 4)
+
+    def _summarize_messages(self, messages: Sequence[Message]) -> str:
+        if self.summarizer is not None:
+            summary = self.summarizer(messages).strip()
+            if summary:
+                return f"[compressed] {summary}"
+        combined = " ".join(message.content.strip() for message in messages if message.content.strip())
+        if len(combined) <= 120:
+            return f"[compressed] {combined}"
+        return f"[compressed] {combined[:117].rstrip()}..."
+
+    def _score_importance(self, role: str, content: str, explicit_importance: float | None) -> float:
+        if explicit_importance is not None:
+            if not math.isfinite(explicit_importance) or explicit_importance < 0:
+                raise ValueError("importance must be a non-negative finite number")
+            return explicit_importance
+
+        score = {"user": 2.0, "assistant": 1.4, "tool": 0.8}.get(role, 1.0)
+        lowered = content.lower()
+        important_keywords = ("must", "重要", "偏好", "记住", "需求", "error", "exception", "failed")
+        if any(keyword in lowered for keyword in important_keywords):
+            score += 0.6
+        if len(content) > 800:
+            score -= 0.2
+        return max(0.1, score)
+
+    def _validate_role(self, role: str) -> str:
+        if not isinstance(role, str) or not role.strip():
+            raise ValueError("role must be a non-empty string")
+        normalized = role.strip().lower()
+        if normalized not in {"user", "assistant", "tool", "system"}:
+            raise ValueError("role must be one of: user, assistant, tool, system")
+        return normalized
+
+    def _validate_content(self, content: str) -> str:
+        if not isinstance(content, str):
+            raise ValueError("content must be a string")
+        return content
 
 
 """

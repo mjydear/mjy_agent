@@ -33,6 +33,7 @@ from pathlib import Path
 import typer      # 💡 学习提示：Typer 是基于 Click 的 CLI 框架，用 Python 类型注解自动生成帮助文档
 
 from athena.agent import ReActAgent
+from athena.cli.tui import run_tui
 from athena.config import load_settings
 from athena.exceptions import AthenaError
 from athena.infra.llm import LLMClientFactory
@@ -240,6 +241,16 @@ def start() -> None:
             # 这样一次工具调用失败或网络超时，不会让整个交互会话崩溃，
             # 用户可以继续提问。这是"容错交互"的体验设计。
             typer.secho(f"Athena error [{exc.code}]: {exc.message}", fg=typer.colors.RED)
+
+
+@app.command("tui")
+def tui(config: Path | None = typer.Option(None, "--config", "-c", help="Path to config.yaml.")) -> None:
+    """启动基于 Textual 的富交互终端界面。"""
+    try:
+        run_tui(lambda: build_agent(config))
+    except (AthenaError, RuntimeError) as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
 
 
 def main() -> None:

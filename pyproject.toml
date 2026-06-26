@@ -8,6 +8,11 @@ profile = "black"
 [tool.mypy]
 python_version = "3.12"
 
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
+
 [[tool.mypy.overrides]]
 module = [
     "pymilvus",

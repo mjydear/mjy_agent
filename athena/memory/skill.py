@@ -24,7 +24,11 @@ import time
 from dataclasses import dataclass, field
 
 from athena.infra.vector_db import InMemoryVectorStore
-from athena.memory.long_term import HashEmbeddingProvider, LongTermMemory, LongTermMemoryRecord
+from athena.memory.long_term import (
+    HashEmbeddingProvider,
+    LongTermMemory,
+    LongTermMemoryRecord,
+)
 
 
 @dataclass(frozen=True)
@@ -57,7 +61,9 @@ class SkillLibrary:
     """
 
     def __init__(self, memory: LongTermMemory | None = None) -> None:
-        self.memory = memory or LongTermMemory(InMemoryVectorStore(), HashEmbeddingProvider())
+        self.memory = memory or LongTermMemory(
+            InMemoryVectorStore(), HashEmbeddingProvider()
+        )
         self.skills: dict[str, Skill] = {}
 
     async def add_skill(self, skill: Skill) -> None:
@@ -65,14 +71,23 @@ class SkillLibrary:
         self._validate_skill(skill)
         self.skills[skill.name] = skill
         searchable = f"{skill.name}\n{skill.description}\n{' '.join(skill.tags)}\n{skill.content}"
-        await self.memory.add(skill.name, searchable, importance=2.0, metadata={"type": "skill", "tags": ",".join(skill.tags)})
+        await self.memory.add(
+            skill.name,
+            searchable,
+            importance=2.0,
+            metadata={"type": "skill", "tags": ",".join(skill.tags)},
+        )
 
     async def match(self, query: str, top_k: int = 3) -> list[Skill]:
         """Return the best matching skills for a query."""
         if not isinstance(query, str) or not query.strip():
             raise ValueError("query must be a non-empty string")
         records = await self.memory.search(query, top_k=top_k)
-        return [self.skills[record.doc_id] for record in records if record.doc_id in self.skills]
+        return [
+            self.skills[record.doc_id]
+            for record in records
+            if record.doc_id in self.skills
+        ]
 
     def explain_match(self, record: LongTermMemoryRecord) -> str:
         """Return a compact explanation for a matched skill record."""

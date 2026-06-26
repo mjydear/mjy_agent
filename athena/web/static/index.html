@@ -1,0 +1,106 @@
+<!--
+📦 模块名称：Athena Web Console HTML 页面骨架
+📍 架构位置：浏览器展示层入口，负责定义三栏式页面结构，被 FastAPI 静态资源服务返回。
+🎯 核心作用：提供会话列表、聊天区、详情面板这些 DOM 容器，让 app.js 能动态填充内容。
+🔗 依赖关系：依赖 Tailwind CDN、style.css 和 app.js；被 athena/api/server.py 的静态挂载依赖。
+💡 设计思路：HTML 只放结构，交互逻辑放 app.js，少量视觉样式交给 Tailwind + style.css。
+📚 学习重点：看左中右三栏如何对应“会话/对话/观测详情”三个产品区域。
+-->
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" /> <!-- 💡 学习提示：viewport 让页面在手机和桌面都按设备宽度布局。 -->
+    <title>Athena Agent Web Console</title>
+    <script src="https://cdn.tailwindcss.com"></script> <!-- 💡 学习提示：用 CDN 引入 Tailwind，避免为 MVP 增加 Node.js 构建流程。 -->
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body class="min-h-screen bg-[#f6f2ea] text-[#1f2933]">
+    <!-- 🔍 原理讲解：main 是整个控制台的布局容器。小屏幕用 flex-col 垂直堆叠，大屏幕 lg:flex-row 变成三栏。 -->
+    <main class="flex min-h-screen flex-col lg:flex-row">
+      <!-- 💡 学习提示：左侧栏负责“选择上下文”，包括会话和工作模式。 -->
+      <aside class="flex w-full flex-col border-b border-[#d8cfbf] bg-[#efe7d8] p-4 lg:w-72 lg:border-b-0 lg:border-r">
+        <div class="mb-5">
+          <p class="text-xs uppercase tracking-[0.2em] text-[#6c5f4d]">Athena Agent</p>
+          <h1 class="mt-2 text-2xl font-semibold text-[#17324d]">Web Console</h1>
+        </div>
+
+        <button id="new-session" class="mb-4 rounded-md bg-[#17324d] px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-[#224a70]">
+          新建会话
+        </button>
+
+        <section class="mb-5">
+          <h2 class="mb-2 text-xs font-semibold uppercase tracking-wide text-[#6c5f4d]">访问模式</h2>
+          <div class="grid gap-2" id="mode-picker"> <!-- 💡 学习提示：data-mode 是给 app.js 读取的状态标记，不只是样式。 -->
+            <button data-mode="chat" class="mode-button active">单 Agent 对话</button>
+            <button data-mode="workflow" class="mode-button">多 Agent 工作流</button>
+            <button data-mode="benchmark" class="mode-button">Benchmark 评测</button>
+            <button data-mode="cloud" class="mode-button">云运维模式</button>
+          </div>
+        </section>
+
+        <section class="mb-5" id="cloud-mode-panel">
+          <h2 class="mb-2 text-xs font-semibold uppercase tracking-wide text-[#6c5f4d]">云运维子模式</h2>
+          <div class="grid grid-cols-2 gap-2">
+            <button data-cloud-mode="k8s" class="cloud-mode-button active">K8s 运维</button>
+            <button data-cloud-mode="resource" class="cloud-mode-button">资源巡检</button>
+            <button data-cloud-mode="fault" class="cloud-mode-button">故障排查</button>
+            <button data-cloud-mode="cost" class="cloud-mode-button">成本优化</button>
+          </div>
+        </section>
+
+        <section class="min-h-0 flex-1">
+          <h2 class="mb-2 text-xs font-semibold uppercase tracking-wide text-[#6c5f4d]">会话列表</h2>
+          <div id="session-list" class="grid max-h-96 gap-2 overflow-y-auto pr-1"></div> <!-- 💡 学习提示：空容器由 app.js 动态填充，避免 HTML 写死会话数据。 -->
+        </section>
+      </aside>
+
+      <!-- 💡 学习提示：中间主区域负责“执行任务”，类似聊天产品里的主工作台。 -->
+      <section class="flex min-h-[70vh] flex-1 flex-col bg-[#fbfaf7]">
+        <header class="border-b border-[#e3ddd1] px-5 py-4">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p id="current-session" class="text-sm text-[#6c5f4d]">尚未创建会话</p>
+              <h2 id="mode-title" class="text-xl font-semibold text-[#17324d]">单 Agent 对话</h2>
+            </div>
+            <div id="status-pill" class="rounded-full bg-[#e7f1e8] px-3 py-1 text-xs font-medium text-[#2d6a3f]">Ready</div> <!-- 💡 学习提示：状态徽标让用户知道当前是否正在流式执行。 -->
+          </div>
+        </header>
+
+        <div id="chat-log" class="flex-1 space-y-4 overflow-y-auto p-5"></div> <!-- 💡 学习提示：聊天消息用 JS 添加，方便切换会话时整体重绘。 -->
+
+        <footer class="border-t border-[#e3ddd1] bg-white/70 p-4">
+          <div class="flex gap-3">
+            <textarea id="message-input" rows="2" class="min-h-[48px] flex-1 resize-none rounded-md border border-[#cfc6b8] bg-white px-3 py-2 text-sm outline-none ring-[#4f7cac] focus:ring-2" placeholder="输入任务，Enter 发送，Shift+Enter 换行"></textarea>
+            <div class="flex flex-col gap-2">
+              <button id="send-message" class="rounded-md bg-[#b74f2a] px-4 py-2 text-sm font-semibold text-white hover:bg-[#983f20]">发送</button>
+              <button id="cancel-stream" class="rounded-md border border-[#cfc6b8] px-4 py-2 text-sm text-[#5c5146] hover:bg-[#f1ece4]" disabled>取消</button>
+            </div>
+          </div>
+        </footer>
+      </section>
+
+      <!-- 💡 学习提示：右侧栏负责“解释过程”，让 Agent 不只是给答案，也展示为什么这么做。 -->
+      <aside class="w-full border-t border-[#d8cfbf] bg-[#f3ecdf] lg:w-[26rem] lg:border-l lg:border-t-0">
+        <div class="border-b border-[#d8cfbf] p-4">
+          <div class="grid grid-cols-3 rounded-md bg-[#e7dece] p-1 text-sm">
+            <button data-tab="trace" class="tab-button active">对话轨迹</button>
+            <button data-tab="metrics" class="tab-button">性能指标</button>
+            <button data-tab="benchmark" class="tab-button">Benchmark</button>
+          </div>
+        </div>
+        <div id="detail-panel" class="h-[calc(100vh-76px)] overflow-y-auto p-4"></div> <!-- 💡 学习提示：详情面板由 app.js 根据当前 Tab 填充轨迹、指标或报告。 -->
+      </aside>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
+
+<!--
+🤔 思考题：
+
+1. 如果要新增“工具调用详情”面板，你会在右侧栏增加 Tab 还是新开页面？
+2. 为什么这里不把会话列表写死在 HTML 里？
+3. 如果项目变大，HTML 结构是否应该拆成模板或组件？
+4. ⚡ 优化建议：未来可以给主要按钮增加 aria-label，提高无障碍访问体验。
+-->

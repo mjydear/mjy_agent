@@ -64,7 +64,9 @@ class ToolExecutor:
     # 答：Agent 需要把失败作为 Observation 反馈给 LLM，让它调整计划；异常会打断 ReAct 循环。
     """
 
-    def __init__(self, registry: ToolRegistry, policy: ToolExecutionPolicy | None = None) -> None:
+    def __init__(
+        self, registry: ToolRegistry, policy: ToolExecutionPolicy | None = None
+    ) -> None:
         self.registry = registry
         self.policy = policy or ToolExecutionPolicy()
 
@@ -80,19 +82,27 @@ class ToolExecutor:
 
         fallback_name = self.policy.fallback_tools.get(call.name)
         if fallback_name:
-            fallback_call = ToolCall(name=fallback_name, arguments=repaired_call.arguments)
-            fallback_result = await self._invoke_with_timeout(self._repair_arguments(fallback_call))
+            fallback_call = ToolCall(
+                name=fallback_name, arguments=repaired_call.arguments
+            )
+            fallback_result = await self._invoke_with_timeout(
+                self._repair_arguments(fallback_call)
+            )
             if fallback_result.success:
                 return fallback_result
 
-        return last_result or ToolResult(success=False, content="", error="tool execution failed")
+        return last_result or ToolResult(
+            success=False, content="", error="tool execution failed"
+        )
 
     def _repair_arguments(self, call: ToolCall) -> ToolCall:
         tool = self.registry.tools.get(call.name)
         if tool is None:
             return call
         allowed = set(tool.parameters)
-        repaired: dict[str, JSONValue] = {key: value for key, value in call.arguments.items() if key in allowed}
+        repaired: dict[str, JSONValue] = {
+            key: value for key, value in call.arguments.items() if key in allowed
+        }
         for parameter in tool.required_parameters:
             if parameter not in repaired and len(call.arguments) == 1:
                 repaired[parameter] = next(iter(call.arguments.values()))
@@ -100,9 +110,13 @@ class ToolExecutor:
 
     async def _invoke_with_timeout(self, call: ToolCall) -> ToolResult:
         try:
-            return await asyncio.wait_for(self.registry.invoke(call), timeout=self.policy.timeout_seconds)
+            return await asyncio.wait_for(
+                self.registry.invoke(call), timeout=self.policy.timeout_seconds
+            )
         except TimeoutError:
-            return ToolResult(success=False, content="", error="tool execution timed out")
+            return ToolResult(
+                success=False, content="", error="tool execution timed out"
+            )
 
     def _validate_call(self, call: ToolCall) -> None:
         if not isinstance(call, ToolCall):

@@ -14,7 +14,7 @@
    ① 开发者用 @registry.register 装饰一个普通函数，它就变成了 Agent 可用的工具
    ② ToolRegistry 自动读取函数名、文档注释、参数类型作为工具描述，零手动配置
    ③ 调用时返回 ToolResult（成功/失败封装），而不是抛出异常，让 Agent 能优雅处理失败
-   
+
    同时支持同步和异步工具函数，通过 inspect.isawaitable() 运行时检测自动适配。
 📚 学习重点：
    1. 装饰器注册模式——@registry.register 的工作原理
@@ -27,7 +27,7 @@
 from __future__ import annotations  # 💡 学习提示：支持类型注解前向引用，全项目统一风格
 
 import asyncio
-import inspect   # 💡 学习提示：Python 标准库的"反射"工具，可以在运行时检查函数的参数、文档等信息
+import inspect  # 💡 学习提示：Python 标准库的"反射"工具，可以在运行时检查函数的参数、文档等信息
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -35,6 +35,7 @@ from typing import TypeAlias, cast
 
 from athena.exceptions import ErrorCode
 from athena.types import JSONValue
+
 logger = logging.getLogger(__name__)
 
 # 💡 学习提示：TypeAlias 定义了一个"类型别名"——ToolHandler 是一个简短的名字，
@@ -86,7 +87,9 @@ class Tool:
     name: str
     description: str
     parameters: Mapping[str, str]
-    required_parameters: tuple[str, ...]  # 💡 学习提示：用 tuple 而不是 list，因为 frozen dataclass 的字段必须是不可变类型
+    required_parameters: tuple[
+        str, ...
+    ]  # 💡 学习提示：用 tuple 而不是 list，因为 frozen dataclass 的字段必须是不可变类型
     handler: ToolHandler
 
 
@@ -161,12 +164,15 @@ class ToolResult:
 
     success: bool
     content: str
-    error: str | None = None  # 💡 学习提示：error 默认为 None，成功时不需要赋值，减少调用时的样板代码
+    error: str | None = (
+        None  # 💡 学习提示：error 默认为 None，成功时不需要赋值，减少调用时的样板代码
+    )
 
 
 # ============================================================
 # 📌 核心实现层：工具注册表
 # ============================================================
+
 
 class ToolRegistry:
     """
@@ -291,8 +297,9 @@ class ToolRegistry:
             if parameter.default is inspect.Parameter.empty
         )
         tool = Tool(
-            name=func.__name__,   # 💡 学习提示：函数名自动成为工具名，所以工具函数命名要有意义
-            description=inspect.getdoc(func) or "",  # 💡 学习提示：getdoc() 比 func.__doc__ 更好——会自动去除缩进和首尾空白
+            name=func.__name__,  # 💡 学习提示：函数名自动成为工具名，所以工具函数命名要有意义
+            description=inspect.getdoc(func)
+            or "",  # 💡 学习提示：getdoc() 比 func.__doc__ 更好——会自动去除缩进和首尾空白
             parameters=parameters,
             required_parameters=required_parameters,
             handler=func,  # 💡 学习提示：存函数引用而不是函数调用结果，invoke() 时才真正执行
@@ -331,7 +338,9 @@ class ToolRegistry:
         lines: list[str] = []
         for tool in self.tools.values():
             # 💡 学习提示：", ".join() 把参数列表拼成 "name: type, name: type" 格式
-            params = ", ".join(f"{name}: {type_name}" for name, type_name in tool.parameters.items())
+            params = ", ".join(
+                f"{name}: {type_name}" for name, type_name in tool.parameters.items()
+            )
             lines.append(f"- {tool.name}({params}): {tool.description}")
         return "\n".join(lines)
 

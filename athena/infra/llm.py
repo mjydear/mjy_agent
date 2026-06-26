@@ -17,13 +17,15 @@
    4. 日志脱敏——为什么要清洗错误信息？（见 _sanitize_error_message）
 """
 
-from __future__ import annotations  # 💡 学习提示：允许在类型注解里引用还未定义的类（如自引用），避免循环导入。Python 3.10+ 之后默认支持，但加上这行兼容性更好
+from __future__ import (  # 💡 学习提示：允许在类型注解里引用还未定义的类（如自引用），避免循环导入。Python 3.10+ 之后默认支持，但加上这行兼容性更好
+    annotations,
+)
 
 import asyncio
 import logging
 import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt
@@ -63,6 +65,7 @@ class LLMMessage(BaseModel):
         msg = LLMMessage(role="user", content="你好，帮我写一首诗")
         msg.model_dump()  # → {"role": "user", "content": "你好，帮我写一首诗"}
     """
+
     role: str
     content: str
 
@@ -93,6 +96,7 @@ class LLMResponse(BaseModel):
                            usage={"prompt_tokens": 10, "total_tokens": 15})
         print(resp.content)  # "今天天气不错"
     """
+
     content: str
     model: str
     # 💡 学习提示：default_factory=dict 而不是 default={}
@@ -105,6 +109,7 @@ class LLMResponse(BaseModel):
 # ============================================================
 # 📌 接口层：定义"能做什么"（Protocol 鸭子类型接口）
 # ============================================================
+
 
 class LLMClient(Protocol):
     """
@@ -138,6 +143,7 @@ class LLMClient(Protocol):
 # ============================================================
 # 📌 实现层：真正干活的类
 # ============================================================
+
 
 class LiteLLMClient(BaseModel):
     """
@@ -301,6 +307,7 @@ class LiteLLMClient(BaseModel):
 # 📌 工厂层：统一的对象创建入口（Factory Pattern）
 # ============================================================
 
+
 class LLMClientFactory:
     """
     LLM 客户端的"工厂"——统一负责创建和验证客户端对象。
@@ -328,7 +335,9 @@ class LLMClientFactory:
     # 💡 学习提示：@staticmethod 表示这个方法不依赖实例状态（没有 self）。
     # 工厂方法通常设计为静态的，因为"创建对象"这个动作不需要先有一个工厂实例——
     # 如果你必须先创建工厂实例再创建产品，那工厂本身就成了多余的包装。
-    def create(provider: str, model: str, temperature: float, max_tokens: int) -> LLMClient:
+    def create(
+        provider: str, model: str, temperature: float, max_tokens: int
+    ) -> LLMClient:
         """
         创建并返回一个经过验证的 LLM 客户端。
 
@@ -384,6 +393,7 @@ class LLMClientFactory:
 # ============================================================
 # 📌 工具函数层：私有辅助函数（_ 前缀 = 模块内部使用，外部不应调用）
 # ============================================================
+
 
 def _required_api_key_env(model: str) -> str | None:
     """
@@ -530,6 +540,7 @@ def _parse_usage(raw_usage: object) -> dict[str, int]:
     这种"防御性解析"（Defensive Parsing）保证了代码在 LiteLLM 升级后不会轻易崩溃。
     代价是代码稍复杂，但换来了更强的稳定性。
     """
+    usage_items: Iterable[tuple[object, object]]
     if isinstance(raw_usage, Mapping):
         usage_items = raw_usage.items()
     elif hasattr(raw_usage, "model_dump"):
@@ -549,7 +560,9 @@ def _parse_usage(raw_usage: object) -> dict[str, int]:
     return {
         str(key): int(value)
         for key, value in usage_items
-        if isinstance(value, int)  # 💡 学习提示：过滤掉 None 或其他非整数值，防止 int(None) 抛 TypeError
+        if isinstance(
+            value, int
+        )  # 💡 学习提示：过滤掉 None 或其他非整数值，防止 int(None) 抛 TypeError
     }
 
 

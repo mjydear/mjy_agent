@@ -1,0 +1,34 @@
+[tool.black]
+line-length = 88
+target-version = ["py312"]
+
+[tool.isort]
+profile = "black"
+
+[tool.mypy]
+python_version = "3.12"
+
+[[tool.mypy.overrides]]
+module = [
+    "pymilvus",
+    "RestrictedPython",
+    "RestrictedPython.Guards",
+]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+omit = [
+    "athena/cli/*",
+    "athena/infra/observability.py",
+    "athena/integration/*",
+    "athena/observability/web/*",
+    "athena/memory/governance.py",
+    "athena/memory/profile.py",
+    "athena/tools/builtin/code.py",
+    "athena/tools/builtin/files.py",
+    "athena/tools/builtin/git.py",
+    "athena/tools/executor.py",
+]
+
+[tool.coverage.report]
+fail_under = 80

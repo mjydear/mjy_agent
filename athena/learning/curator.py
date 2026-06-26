@@ -28,7 +28,6 @@ from collections.abc import Awaitable, Callable
 
 from athena.learning.tracer import Tracer
 
-
 CuratorJob = Callable[[Tracer], Awaitable[None]]
 
 
@@ -41,7 +40,12 @@ class CuratorDaemon:
         例如总结用户偏好、提炼失败案例、写入长期记忆或生成新技能。
     """
 
-    def __init__(self, tracer: Tracer, job: CuratorJob | None = None, interval_seconds: float = 60.0) -> None:
+    def __init__(
+        self,
+        tracer: Tracer,
+        job: CuratorJob | None = None,
+        interval_seconds: float = 60.0,
+    ) -> None:
         if interval_seconds <= 0:
             raise ValueError("interval_seconds must be positive")
         self.tracer = tracer
@@ -70,7 +74,9 @@ class CuratorDaemon:
         while not self._stop_event.is_set():
             await self.job(self.tracer)
             try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=self.interval_seconds)
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=self.interval_seconds
+                )
             except TimeoutError:
                 continue
 

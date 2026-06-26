@@ -30,10 +30,10 @@ import json
 import shlex
 import time
 import urllib.request
-from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 @dataclass(frozen=True)
@@ -49,8 +49,17 @@ class SandboxPolicy:
         max_output_chars: 最大输出长度，防止工具刷爆上下文或内存
     """
 
-    allowed_shell_commands: frozenset[str] = frozenset({"git", "python", "pytest", "dir", "type", "findstr"})
-    blocked_shell_fragments: tuple[str, ...] = ("rm -rf", "del /s", "format ", "shutdown", "reg delete", ":(){")
+    allowed_shell_commands: frozenset[str] = frozenset(
+        {"git", "python", "pytest", "dir", "type", "findstr"}
+    )
+    blocked_shell_fragments: tuple[str, ...] = (
+        "rm -rf",
+        "del /s",
+        "format ",
+        "shutdown",
+        "reg delete",
+        ":(){",
+    )
     allowed_hosts: frozenset[str] = frozenset()
     timeout_seconds: float = 5.0
     max_output_chars: int = 20_000
@@ -102,7 +111,9 @@ class SecuritySandbox:
     # 答：分散在每个工具里容易漏；收口到 SecuritySandbox 能统一策略、统一审计、统一测试。
     """
 
-    def __init__(self, policy: SandboxPolicy | None = None, audit_log_path: Path | None = None) -> None:
+    def __init__(
+        self, policy: SandboxPolicy | None = None, audit_log_path: Path | None = None
+    ) -> None:
         self.policy = policy or SandboxPolicy()
         self.audit_log_path = audit_log_path
         self.audit_records: list[AuditRecord] = []
@@ -118,10 +129,17 @@ class SecuritySandbox:
         self._require_text(code, "code")
         started_at = time.time()
         try:
-            output = await asyncio.wait_for(asyncio.to_thread(self._execute_restricted_python, code), timeout=self.policy.timeout_seconds)
-            return self._result("python", "<restricted-python>", started_at, True, output)
+            output = await asyncio.wait_for(
+                asyncio.to_thread(self._execute_restricted_python, code),
+                timeout=self.policy.timeout_seconds,
+            )
+            return self._result(
+                "python", "<restricted-python>", started_at, True, output
+            )
         except Exception as exc:
-            return self._result("python", "<restricted-python>", started_at, False, "", str(exc))
+            return self._result(
+                "python", "<restricted-python>", started_at, False, "", str(exc)
+            )
 
     async def run_shell(self, command: str, cwd: Path | None = None) -> SandboxResult:
         """
@@ -144,13 +162,26 @@ class SecuritySandbox:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=self.policy.timeout_seconds)
-            output = (stdout + stderr).decode("utf-8", errors="replace")[: self.policy.max_output_chars]
-            return self._result("shell", command, started_at, process.returncode == 0, output, None if process.returncode == 0 else output)
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=self.policy.timeout_seconds
+            )
+            output = (stdout + stderr).decode("utf-8", errors="replace")[
+                : self.policy.max_output_chars
+            ]
+            return self._result(
+                "shell",
+                command,
+                started_at,
+                process.returncode == 0,
+                output,
+                None if process.returncode == 0 else output,
+            )
         except asyncio.TimeoutError:
             with contextlib.suppress(ProcessLookupError):
                 process.kill()
-            return self._result("shell", command, started_at, False, "", "command timed out")
+            return self._result(
+                "shell", command, started_at, False, "", "command timed out"
+            )
 
     async def fetch_url(self, url: str) -> SandboxResult:
         """只允许访问显式 allowlist 中的主机，默认禁止所有网络请求。"""
@@ -160,11 +191,18 @@ class SecuritySandbox:
             raise PermissionError(f"host is not allowlisted: {host}")
         started_at = time.time()
         try:
-            def read() -> str:
-                with urllib.request.urlopen(url, timeout=self.policy.timeout_seconds) as response:
-                    return response.read(self.policy.max_output_chars).decode("utf-8", errors="replace")
 
-            output = await asyncio.wait_for(asyncio.to_thread(read), timeout=self.policy.timeout_seconds)
+            def read() -> str:
+                with urllib.request.urlopen(
+                    url, timeout=self.policy.timeout_seconds
+                ) as response:
+                    return response.read(self.policy.max_output_chars).decode(
+                        "utf-8", errors="replace"
+                    )
+
+            output = await asyncio.wait_for(
+                asyncio.to_thread(read), timeout=self.policy.timeout_seconds
+            )
             return self._result("network", url, started_at, True, output)
         except Exception as exc:
             return self._result("network", url, started_at, False, "", str(exc))
@@ -174,10 +212,15 @@ class SecuritySandbox:
             from RestrictedPython import compile_restricted
             from RestrictedPython.Guards import safe_builtins
         except ImportError as exc:
-            raise RuntimeError("RestrictedPython is required for sandboxed Python execution") from exc
+            raise RuntimeError(
+                "RestrictedPython is required for sandboxed Python execution"
+            ) from exc
 
         byte_code = compile_restricted(code, "<sandbox>", "exec")
-        namespace: dict[str, Any] = {"__builtins__": safe_builtins, "_print_": _SandboxPrinter}
+        namespace: dict[str, Any] = {
+            "__builtins__": safe_builtins,
+            "_print_": _SandboxPrinter,
+        }
         exec(byte_code, namespace, namespace)
         printer = namespace.get("_print")
         return printer() if callable(printer) else ""
@@ -193,8 +236,22 @@ class SecuritySandbox:
         if executable not in self.policy.allowed_shell_commands:
             raise PermissionError(f"command is not allowlisted: {executable}")
 
-    def _result(self, operation: str, command: str, started_at: float, success: bool, output: str, error: str | None = None) -> SandboxResult:
-        record = AuditRecord(operation=operation, command=command, started_at=started_at, finished_at=time.time(), success=success)
+    def _result(
+        self,
+        operation: str,
+        command: str,
+        started_at: float,
+        success: bool,
+        output: str,
+        error: str | None = None,
+    ) -> SandboxResult:
+        record = AuditRecord(
+            operation=operation,
+            command=command,
+            started_at=started_at,
+            finished_at=time.time(),
+            success=success,
+        )
         self.audit_records.append(record)
         if self.audit_log_path is not None:
             self.audit_log_path.parent.mkdir(parents=True, exist_ok=True)

@@ -5,7 +5,6 @@ from __future__ import annotations
 from athena.memory import WorkingMemory
 
 
-
 def test_working_memory_retains_recent_messages() -> None:
     """Working memory should render retained messages."""
     memory = WorkingMemory(max_tokens=20)

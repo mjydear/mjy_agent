@@ -94,9 +94,15 @@ class UserProfile:
     def render(self) -> str:
         """Render profile facts for prompt context."""
         sections = []
-        for name, values in (("preferences", self.preferences), ("coding_style", self.coding_style), ("tech_stack", self.tech_stack)):
+        for name, values in (
+            ("preferences", self.preferences),
+            ("coding_style", self.coding_style),
+            ("tech_stack", self.tech_stack),
+        ):
             if values:
-                facts = ", ".join(f"{key}={value}" for key, value in sorted(values.items()))
+                facts = ", ".join(
+                    f"{key}={value}" for key, value in sorted(values.items())
+                )
                 sections.append(f"{name}: {facts}")
         return "\n".join(sections)
 
@@ -107,7 +113,9 @@ class UserProfile:
             return self.coding_style
         if category == "tech_stack":
             return self.tech_stack
-        raise ValueError("profile category must be preferences, coding_style or tech_stack")
+        raise ValueError(
+            "profile category must be preferences, coding_style or tech_stack"
+        )
 
 
 class ProfileCurator:

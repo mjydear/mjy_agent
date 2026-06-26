@@ -27,10 +27,10 @@
 
 from __future__ import annotations  # 💡 学习提示：支持类型注解前向引用，全项目统一风格
 
-import asyncio    # 💡 学习提示：CLI 是同步的，Agent 是异步的，asyncio.run() 是连接两者的桥梁
+import asyncio  # 💡 学习提示：CLI 是同步的，Agent 是异步的，asyncio.run() 是连接两者的桥梁
 from pathlib import Path
 
-import typer      # 💡 学习提示：Typer 是基于 Click 的 CLI 框架，用 Python 类型注解自动生成帮助文档
+import typer  # 💡 学习提示：Typer 是基于 Click 的 CLI 框架，用 Python 类型注解自动生成帮助文档
 
 from athena.agent import ReActAgent
 from athena.cli.tui import run_tui
@@ -89,11 +89,17 @@ def build_agent(config_path: Path | None = None) -> ReActAgent:
         # 使用指定配置文件
         agent = build_agent(Path("custom_config.yaml"))
     """
-    settings = load_settings(config_path)  # 💡 学习提示：读取并验证配置文件，所有参数都有默认值，找不到文件也能运行
-    configure_logging(settings.logging.level)  # 💡 学习提示：在最早的时机初始化日志，确保后续所有组件的日志都能被记录
+    settings = load_settings(
+        config_path
+    )  # 💡 学习提示：读取并验证配置文件，所有参数都有默认值，找不到文件也能运行
+    configure_logging(
+        settings.logging.level
+    )  # 💡 学习提示：在最早的时机初始化日志，确保后续所有组件的日志都能被记录
 
     registry = ToolRegistry()
-    register_basic_tools(registry)  # 💡 学习提示：注册内置工具（echo、current_utc_time），更多工具也在这里加
+    register_basic_tools(
+        registry
+    )  # 💡 学习提示：注册内置工具（echo、current_utc_time），更多工具也在这里加
 
     llm_client = LLMClientFactory.create(
         provider=settings.llm.provider,
@@ -121,7 +127,9 @@ def chat(
     query: str = typer.Argument(..., help="Single-turn user query."),
     # 💡 学习提示：typer.Argument(...) 中的 ... 表示"必填参数"（Ellipsis 是 Python 的省略号对象）
     # 用户不传 query 时，Typer 会自动报错并显示用法帮助
-    config: Path | None = typer.Option(None, "--config", "-c", help="Path to config.yaml."),
+    config: Path | None = typer.Option(
+        None, "--config", "-c", help="Path to config.yaml."
+    ),
     # 💡 学习提示：typer.Option 是"可选参数"，用 --config 或 -c 传入
     # 默认 None 表示使用默认配置文件路径（config.yaml）
 ) -> None:
@@ -169,8 +177,12 @@ def chat(
     """
     try:
         agent = build_agent(config)
-        response = asyncio.run(agent.run(query))  # 💡 学习提示：同步入口进入异步世界的关键一步
-        typer.echo(response.answer)  # 💡 学习提示：typer.echo() 类似 print()，但 Typer 推荐用它，方便测试时捕获输出
+        response = asyncio.run(
+            agent.run(query)
+        )  # 💡 学习提示：同步入口进入异步世界的关键一步
+        typer.echo(
+            response.answer
+        )  # 💡 学习提示：typer.echo() 类似 print()，但 Typer 推荐用它，方便测试时捕获输出
     except AthenaError as exc:
         # 💡 学习提示：typer.secho() = styled echo，fg=RED 让错误信息显示为红色，方便用户区分
         typer.secho(f"Athena error [{exc.code}]: {exc.message}", fg=typer.colors.RED)
@@ -228,7 +240,9 @@ def start() -> None:
     # 💡 学习提示：while True 是 REPL 的标准写法，靠内部 break 退出，而不是 while 条件。
     # 这比 while user_input != "exit" 更清晰，因为退出条件可能有多个（exit、quit、Ctrl+C）
     while True:
-        query = typer.prompt("You")  # 💡 学习提示：typer.prompt() 显示提示符并等待用户输入（阻塞），类似 input() 但有更好的格式支持
+        query = typer.prompt(
+            "You"
+        )  # 💡 学习提示：typer.prompt() 显示提示符并等待用户输入（阻塞），类似 input() 但有更好的格式支持
         if query.strip().lower() in {"exit", "quit"}:
             # 💡 学习提示：.lower() 让退出命令大小写不敏感（"Exit"、"EXIT"、"exit" 都能退出）
             # 用集合 {"exit", "quit"} 而不是 or 语句，便于将来添加更多退出词
@@ -240,15 +254,60 @@ def start() -> None:
             # 💡 学习提示：循环里的错误只打印警告，不终止会话（不 raise typer.Exit）。
             # 这样一次工具调用失败或网络超时，不会让整个交互会话崩溃，
             # 用户可以继续提问。这是"容错交互"的体验设计。
-            typer.secho(f"Athena error [{exc.code}]: {exc.message}", fg=typer.colors.RED)
+            typer.secho(
+                f"Athena error [{exc.code}]: {exc.message}", fg=typer.colors.RED
+            )
 
 
 @app.command("tui")
-def tui(config: Path | None = typer.Option(None, "--config", "-c", help="Path to config.yaml.")) -> None:
+def tui(
+    config: Path | None = typer.Option(
+        None, "--config", "-c", help="Path to config.yaml."
+    )
+) -> None:
     """启动基于 Textual 的富交互终端界面。"""
     try:
         run_tui(lambda: build_agent(config))
     except (AthenaError, RuntimeError) as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command("web")
+def web(
+    host: str | None = typer.Option(None, "--host", help="Web server bind host."),
+    port: int | None = typer.Option(None, "--port", help="Web server bind port."),
+    config: Path | None = typer.Option(
+        None, "--config", "-c", help="Path to config.yaml."
+    ),
+) -> None:
+    """
+    启动 Athena Agent Web 控制台。
+
+    功能说明：读取配置，创建 FastAPI app，并用 uvicorn 启动 HTTP 服务。
+    参数说明：
+        host：覆盖 config.yaml 里的 web.host。
+        port：覆盖 config.yaml 里的 web.port。
+        config：可选配置文件路径。
+    返回值：None；服务会阻塞运行直到用户停止进程。
+    设计思路：把 Web 服务也接入 Typer CLI，让用户用 `athena web` 就能启动，不需要记 uvicorn 命令。
+    使用示例：athena web --host 127.0.0.1 --port 8000
+
+    🎯 面试考点：为什么在函数内部 import uvicorn/create_app？答案：只有执行 web 命令时才需要 Web 依赖，普通 CLI 启动更轻量。
+    """
+    try:
+        import uvicorn  # 💡 学习提示：延迟导入可以避免用户只用 chat 命令时也必须加载 Web 服务依赖。
+
+        from athena.api.server import create_app
+
+        settings = load_settings(config)
+        resolved_host = (
+            host or settings.web.host
+        )  # 💡 学习提示：命令行参数优先级高于配置文件，方便临时换端口演示。
+        resolved_port = port or settings.web.port
+        typer.echo(f"Athena Web Console: http://{resolved_host}:{resolved_port}")
+        uvicorn.run(create_app(settings), host=resolved_host, port=resolved_port)
+    except (AthenaError, RuntimeError, ImportError) as exc:
         typer.secho(str(exc), fg=typer.colors.RED)
         raise typer.Exit(code=1) from exc
 

@@ -147,7 +147,13 @@ class LongTermMemory:
         self.weights = weights or HybridRetrievalWeights()
         self.half_life_seconds = half_life_seconds
 
-    async def add(self, doc_id: str, content: str, importance: float = 1.0, metadata: dict[str, str] | None = None) -> None:
+    async def add(
+        self,
+        doc_id: str,
+        content: str,
+        importance: float = 1.0,
+        metadata: dict[str, str] | None = None,
+    ) -> None:
         """
         写入一条长期记忆。
 
@@ -163,10 +169,21 @@ class LongTermMemory:
             raise ValueError("importance must be a non-negative finite number")
         embedding = await self.embedding_provider.embed(content)
         document_metadata = dict(metadata or {})
-        document_metadata.update({"created_at": str(time.time()), "importance": str(importance)})
-        await self.vector_store.add(MemoryDocument(doc_id=doc_id, content=content, embedding=embedding, metadata=document_metadata))
+        document_metadata.update(
+            {"created_at": str(time.time()), "importance": str(importance)}
+        )
+        await self.vector_store.add(
+            MemoryDocument(
+                doc_id=doc_id,
+                content=content,
+                embedding=embedding,
+                metadata=document_metadata,
+            )
+        )
 
-    async def search(self, query: str, top_k: int = 5, candidate_k: int | None = None) -> Sequence[LongTermMemoryRecord]:
+    async def search(
+        self, query: str, top_k: int = 5, candidate_k: int | None = None
+    ) -> Sequence[LongTermMemoryRecord]:
         """
         使用混合检索搜索长期记忆。
 
@@ -178,26 +195,47 @@ class LongTermMemory:
         if top_k <= 0:
             raise ValueError("top_k must be positive")
         query_embedding = await self.embedding_provider.embed(query)
-        candidates = await self.vector_store.search(query_embedding, candidate_k or max(top_k * 4, top_k))
-        ranked = [self._score_document(query_embedding, document) for document in candidates]
+        candidates = await self.vector_store.search(
+            query_embedding, candidate_k or max(top_k * 4, top_k)
+        )
+        ranked = [
+            self._score_document(query_embedding, document) for document in candidates
+        ]
         ranked.sort(key=lambda record: record.score, reverse=True)
         return ranked[:top_k]
 
-    def _score_document(self, query_embedding: Sequence[float], document: MemoryDocument) -> LongTermMemoryRecord:
+    def _score_document(
+        self, query_embedding: Sequence[float], document: MemoryDocument
+    ) -> LongTermMemoryRecord:
         semantic = self._cosine_similarity(query_embedding, document.embedding)
         created_at = float(document.metadata.get("created_at", "0") or 0)
-        age = max(0.0, time.time() - created_at) if created_at > 0 else self.half_life_seconds
+        age = (
+            max(0.0, time.time() - created_at)
+            if created_at > 0
+            else self.half_life_seconds
+        )
         recency = math.exp(-age / self.half_life_seconds)
-        importance = min(float(document.metadata.get("importance", "1.0") or 1.0), 5.0) / 5.0
-        weight_total = self.weights.semantic + self.weights.recency + self.weights.importance
+        importance = (
+            min(float(document.metadata.get("importance", "1.0") or 1.0), 5.0) / 5.0
+        )
+        weight_total = (
+            self.weights.semantic + self.weights.recency + self.weights.importance
+        )
         score = (
             semantic * self.weights.semantic
             + recency * self.weights.recency
             + importance * self.weights.importance
         ) / weight_total
-        return LongTermMemoryRecord(doc_id=document.doc_id, content=document.content, score=score, metadata=dict(document.metadata))
+        return LongTermMemoryRecord(
+            doc_id=document.doc_id,
+            content=document.content,
+            score=score,
+            metadata=dict(document.metadata),
+        )
 
-    def _cosine_similarity(self, left: Sequence[float], right: Sequence[float]) -> float:
+    def _cosine_similarity(
+        self, left: Sequence[float], right: Sequence[float]
+    ) -> float:
         if not left or not right or len(left) != len(right):
             return 0.0
         dot = sum(a * b for a, b in zip(left, right, strict=True))

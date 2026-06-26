@@ -14,7 +14,7 @@
    不同于简单的"先进先出（FIFO）队列"，这里每条消息都有一个重要性分数（importance）。
    当总 Token 超出预算时，优先删除重要性最低的旧消息，而不是单纯删最早的那条。
    这样能保留关键信息（如用户的原始问题），即使它们比较早。
-   
+
    设计上有意保持简单——Token 估算用"字符数 ÷ 4"的粗略方法，
    精确 tokenizer 属于二阶段增强，MVP 阶段这样已够用。
 📚 学习重点：
@@ -33,7 +33,9 @@ from collections.abc import Callable, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt
 
-logger = logging.getLogger(__name__)  # 💡 学习提示：日志显示 "athena.memory.working"，方便追踪哪些消息被剪枝了
+logger = logging.getLogger(
+    __name__
+)  # 💡 学习提示：日志显示 "athena.memory.working"，方便追踪哪些消息被剪枝了
 
 
 # ============================================================
@@ -130,12 +132,16 @@ class WorkingMemory(BaseModel):
     # 如果传入 0 或 -1 会在创建时立刻报错，而不是等到真正使用时才发现
     max_tokens: PositiveInt = 8000
     compression_threshold: float = 0.85
-    summarizer: Callable[[Sequence[Message]], str] | None = Field(default=None, exclude=True)
+    summarizer: Callable[[Sequence[Message]], str] | None = Field(
+        default=None, exclude=True
+    )
     # 💡 学习提示：Field(default_factory=list) 避免所有实例共享同一个列表对象，
     # 这是 Python 可变默认值的经典陷阱，Pydantic 通过 factory 彻底规避
     messages: list[Message] = Field(default_factory=list)
 
-    def add_message(self, role: str, content: str, importance: float | None = None) -> None:
+    def add_message(
+        self, role: str, content: str, importance: float | None = None
+    ) -> None:
         """
         向记忆中添加一条新消息，并在必要时自动剪枝。
 
@@ -167,7 +173,9 @@ class WorkingMemory(BaseModel):
         role = self._validate_role(role)
         content = self._validate_content(content)
         scored_importance = self._score_importance(role, content, importance)
-        self.messages.append(Message(role=role, content=content, importance=scored_importance))
+        self.messages.append(
+            Message(role=role, content=content, importance=scored_importance)
+        )
         # 💡 学习提示：每次加消息后都检查一次是否需要剪枝，
         # 而不是等到读取记忆时才检查。"写时剪枝"确保记忆始终在预算内，
         # 不会在读取时产生意外的延迟。
@@ -275,7 +283,10 @@ class WorkingMemory(BaseModel):
         - range(len-1) 永远排除最后一条（刚加入的最新消息），确保它不会被立刻删除
         - len > 1 保证至少保留 1 条消息，防止死循环或完全清空记忆
         """
-        while self._estimated_tokens() > int(self.max_tokens * self.compression_threshold) and len(self.messages) > 1:
+        while (
+            self._estimated_tokens() > int(self.max_tokens * self.compression_threshold)
+            and len(self.messages) > 1
+        ):
             if self._compress_one_message():
                 continue
             break
@@ -380,12 +391,16 @@ class WorkingMemory(BaseModel):
             summary = self.summarizer(messages).strip()
             if summary:
                 return f"[compressed] {summary}"
-        combined = " ".join(message.content.strip() for message in messages if message.content.strip())
+        combined = " ".join(
+            message.content.strip() for message in messages if message.content.strip()
+        )
         if len(combined) <= 120:
             return f"[compressed] {combined}"
         return f"[compressed] {combined[:117].rstrip()}..."
 
-    def _score_importance(self, role: str, content: str, explicit_importance: float | None) -> float:
+    def _score_importance(
+        self, role: str, content: str, explicit_importance: float | None
+    ) -> float:
         if explicit_importance is not None:
             if not math.isfinite(explicit_importance) or explicit_importance < 0:
                 raise ValueError("importance must be a non-negative finite number")
@@ -393,7 +408,16 @@ class WorkingMemory(BaseModel):
 
         score = {"user": 2.0, "assistant": 1.4, "tool": 0.8}.get(role, 1.0)
         lowered = content.lower()
-        important_keywords = ("must", "重要", "偏好", "记住", "需求", "error", "exception", "failed")
+        important_keywords = (
+            "must",
+            "重要",
+            "偏好",
+            "记住",
+            "需求",
+            "error",
+            "exception",
+            "failed",
+        )
         if any(keyword in lowered for keyword in important_keywords):
             score += 0.6
         if len(content) > 800:

@@ -15,7 +15,12 @@ async def test_event_bus_handles_concurrent_trace_events() -> None:
     tracer = Tracer(max_events=100)
     bus.subscribe(tracer)
 
-    await asyncio.gather(*(bus.publish(TraceEvent(name="step", run_id=str(index))) for index in range(20)))
+    await asyncio.gather(
+        *(
+            bus.publish(TraceEvent(name="step", run_id=str(index)))
+            for index in range(20)
+        )
+    )
 
     assert len(tracer.events) == 20
 

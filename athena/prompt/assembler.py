@@ -18,7 +18,7 @@
       → 几乎每步都一样，只加载一次逻辑上就够了
    ② 动态部分（每次调用 build_prompt 时传入）：memory、tools、scratchpad、query
       → 每步都在变化，必须实时获取
-   
+
    模板文件（react.md）用 Python 内置的 str.format() 做占位符替换，
    零依赖、简单直接，优于 Jinja2 等重量级模板引擎（MVP 阶段够用）。
 📚 学习重点：
@@ -32,14 +32,19 @@
 from __future__ import annotations  # 💡 学习提示：全项目统一风格，支持类型注解前向引用
 
 import logging
-from pathlib import Path  # 💡 学习提示：用 Path 而非字符串处理路径，跨平台兼容（Windows/Linux 斜杠问题）
+from pathlib import (  # 💡 学习提示：用 Path 而非字符串处理路径，跨平台兼容（Windows/Linux 斜杠问题）
+    Path,
+)
 
 from pydantic import BaseModel, Field
 
 from athena.exceptions import ErrorCode, PromptError
 from athena.memory import WorkingMemory
 from athena.tools import ToolRegistry
-logger = logging.getLogger(__name__)  # 💡 学习提示：模块级 logger，日志显示 "athena.prompt.assembler"
+
+logger = logging.getLogger(
+    __name__
+)  # 💡 学习提示：模块级 logger，日志显示 "athena.prompt.assembler"
 
 
 class ContextAssembler(BaseModel):
@@ -204,7 +209,7 @@ class ContextAssembler(BaseModel):
             return template.format(
                 system_prompt=system_prompt,
                 static_context=self.static_context,
-                memory=memory.render(),         # 💡 学习提示：.render() 把消息列表转成 "role: content" 的多行文字
+                memory=memory.render(),  # 💡 学习提示：.render() 把消息列表转成 "role: content" 的多行文字
                 tools=tool_descriptions,
                 scratchpad=scratchpad,
                 query=query,

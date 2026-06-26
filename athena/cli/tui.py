@@ -36,7 +36,9 @@ def run_tui(agent_factory: Callable[[], ReActAgent]) -> None:
         from textual.containers import Vertical
         from textual.widgets import Footer, Header, Input, RichLog
     except ImportError as exc:
-        raise RuntimeError("Textual is required to run the TUI. Install textual first.") from exc
+        raise RuntimeError(
+            "Textual is required to run the TUI. Install textual first."
+        ) from exc
 
     class AthenaTUI(App[None]):
         CSS = """

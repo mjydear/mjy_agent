@@ -10,3 +10,9 @@ agent:
   max_steps: 6
 logging:
   level: INFO
+web:
+  host: 127.0.0.1
+  port: 8000
+  cors_origins:
+    - "*"
+  session_ttl_seconds: 3600

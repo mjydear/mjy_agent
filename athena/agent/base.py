@@ -13,7 +13,7 @@
    "接口与实现分离"原则：
    ① base.py   → 只定义"接口契约"（Agent 能做什么、返回什么格式）
    ② executor.py → 实现具体的 ReAct 推理循环（怎么做到的）
-   
+
    这个文件故意保持极简——只有数据模型和协议接口，不含任何业务逻辑。
    好处：接口稳定，实现可以随时替换（从 ReAct 换成 CoT、换成 Plan-Execute 等）。
 📚 学习重点：
@@ -23,12 +23,13 @@
    4. 这个文件和 executor.py 的分工是怎么划定的？
 """
 
-from __future__ import annotations  # 💡 学习提示：支持类型注解中的前向引用，全项目统一风格
+from __future__ import (  # 💡 学习提示：支持类型注解中的前向引用，全项目统一风格
+    annotations,
+)
 
 from typing import Protocol
 
 from pydantic import BaseModel, Field
-
 
 # ============================================================
 # 📌 数据模型层：定义"Agent 的返回格式长什么样"
@@ -78,6 +79,7 @@ class AgentResponse(BaseModel):
         print(response.answer)   # 只给用户看答案
         print(response.steps)    # 调试时打印推理链
     """
+
     answer: str
     # 💡 学习提示：同样用 default_factory=list 而非 default=[]，避免所有实例共享同一列表对象
     # 如果不用 Field(default_factory=list) 而用 steps: list[str] = []，
@@ -115,6 +117,7 @@ class Agent(Protocol):
     # 不需要知道 Agent 的内部状态、记忆管理、工具调用等细节。
     # 如果接口方法过多，每个实现类都要实现所有方法，灵活性大幅降低。
     """
+
     """
     🔍 原理讲解：这个 Protocol 和 executor.py 的关系
 

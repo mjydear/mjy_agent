@@ -115,7 +115,9 @@ class Tracer:
         if self.sink_path is not None:
             self.sink_path.parent.mkdir(parents=True, exist_ok=True)
             with self.sink_path.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(self._serialize(event), ensure_ascii=False) + "\n")
+                stream.write(
+                    json.dumps(self._serialize(event), ensure_ascii=False) + "\n"
+                )
 
     def by_run(self, run_id: str) -> Sequence[TraceEvent]:
         if not isinstance(run_id, str) or not run_id.strip():
@@ -128,4 +130,9 @@ class Tracer:
         self.events = [event for event in self.events if event.run_id != run_id]
 
     def _serialize(self, event: TraceEvent) -> dict[str, object]:
-        return {"name": event.name, "run_id": event.run_id, "timestamp": event.timestamp, "payload": event.payload}
+        return {
+            "name": event.name,
+            "run_id": event.run_id,
+            "timestamp": event.timestamp,
+            "payload": event.payload,
+        }

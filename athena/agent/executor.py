@@ -18,7 +18,7 @@
    ① Thought（思考）：AI 分析当前情况，决定下一步怎么做
    ② Action（行动）：调用某个工具，或者给出最终答案
    ③ Observation（观察）：把工具返回的结果告诉 AI，进入下一轮思考
-   
+
    代码采用「数据类（dataclass）+ 依赖注入」模式，而非 Pydantic BaseModel，
    原因是 ReActAgent 需要持有复杂对象（如 LLMClient），不需要序列化。
 📚 学习重点：
@@ -29,21 +29,22 @@
    5. _parse_decision 中 JSON 解析 + 降级回退的健壮性设计
 """
 
-from __future__ import annotations  # 💡 学习提示：全项目统一风格，支持类型注解前向引用
+from __future__ import annotations
 
-import json         # 💡 学习提示：解析 LLM 返回的 JSON 格式决策
+import json
 import logging
-from collections.abc import Mapping
-from dataclasses import dataclass, field  # 💡 学习提示：用 dataclass 而非 Pydantic，见类注释说明
+from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass, field
 from typing import cast
 
-from athena.agent.base import AgentResponse    # Agent 的标准返回格式
+from athena.agent.base import AgentResponse
 from athena.exceptions import AgentError, AthenaError, ErrorCode
 from athena.infra.llm import LLMClient, LLMMessage
-from athena.memory import WorkingMemory        # 短期对话记忆
-from athena.prompt import ContextAssembler     # 每步的提示词组装器
+from athena.memory import WorkingMemory
+from athena.prompt import ContextAssembler
 from athena.tools import ToolCall, ToolRegistry
 from athena.types import JSONValue
+
 logger = logging.getLogger(__name__)
 
 
@@ -105,9 +106,32 @@ class ReActDecision:
     final_answer: str | None = None
 
 
+@dataclass(frozen=True)
+class StreamEvent:
+    """
+    ReAct 流式输出事件。
+
+    功能说明：表示 stream_run() 产出的一小段执行进度。
+    参数说明：
+        event_type：事件类型，例如 start、step、final。
+        content：事件内容，可以是用户问题、步骤描述或最终答案。
+        step_index：步骤序号，start 通常为 0。
+    返回值：数据容器，不主动返回。
+    设计思路：用统一事件对象包装流式输出，UI、CLI、WebSocket 都可以用同一种方式消费。
+    使用示例：StreamEvent(event_type="final", content="完成", step_index=3)
+
+    🎯 面试考点：为什么不用直接 yield 字符串？答案：字符串只能表达内容，无法表达事件类型、步骤序号等结构化信息。
+    """
+
+    event_type: str
+    content: str
+    step_index: int = 0
+
+
 # ============================================================
 # 📌 核心实现：ReAct Agent 执行器
 # ============================================================
+
 
 @dataclass
 # 💡 学习提示：这里用 @dataclass 而不是 @dataclass(frozen=True)
@@ -170,7 +194,9 @@ class ReActAgent:
         # dataclass 用 __post_init__，Pydantic 用 validator，两者目的相同但写法不同。
         """
         if self.max_steps <= 0:
-            raise AgentError(ErrorCode.AGENT_EXECUTION_FAILED, "max_steps must be positive")
+            raise AgentError(
+                ErrorCode.AGENT_EXECUTION_FAILED, "max_steps must be positive"
+            )
 
     async def run(self, query: str) -> AgentResponse:
         """
@@ -223,14 +249,18 @@ class ReActAgent:
         """
         if not query.strip():
             # 💡 学习提示：.strip() 去除首尾空白字符，防止用户只输入空格也能触发 Agent
-            raise AgentError(ErrorCode.AGENT_EXECUTION_FAILED, "Query must not be empty")
+            raise AgentError(
+                ErrorCode.AGENT_EXECUTION_FAILED, "Query must not be empty"
+            )
 
         # 💡 学习提示：把用户消息存入记忆，importance=2.0 表示重要程度高。
         # 后续的提示词组装会从 memory 里取历史，这样 AI 能记住这次对话的上下文。
         self.memory.add_message("user", query, importance=2.0)
 
-        scratchpad = ""   # 💡 学习提示：草稿纸——累积本次任务所有步骤的文字，每轮追加，始终送入 LLM
-        steps: list[str] = []  # 💡 学习提示：给调用方看的推理链，与 scratchpad 内容相似但格式更简洁
+        scratchpad = ""  # 💡 学习提示：草稿纸——累积本次任务所有步骤的文字，每轮追加，始终送入 LLM
+        steps: list[str] = (
+            []
+        )  # 💡 学习提示：给调用方看的推理链，与 scratchpad 内容相似但格式更简洁
 
         try:
             # 💡 学习提示：range(1, max_steps + 1) 从 1 开始是为了让日志里的步骤编号更直观
@@ -250,13 +280,17 @@ class ReActAgent:
                 # --- 步骤 2：调用 LLM 获取决策 ---
                 # 💡 学习提示：每一步都是独立的 LLM 调用，上下文通过 scratchpad 传递，
                 # 而不是依赖 LLM 的对话历史（这样更可控，避免 Token 超限）
-                response = await self.llm_client.complete([LLMMessage(role="user", content=prompt)])
+                response = await self.llm_client.complete(
+                    [LLMMessage(role="user", content=prompt)]
+                )
 
                 # --- 步骤 3：解析 LLM 的 JSON 决策 ---
                 decision = self._parse_decision(response.content)
                 logger.info(
                     "Agent step %s thought=%s action=%s",
-                    step_index, decision.thought, decision.action
+                    step_index,
+                    decision.thought,
+                    decision.action,
                 )
                 steps.append(f"Thought: {decision.thought}")  # 记录思考过程到返回值
 
@@ -266,7 +300,9 @@ class ReActAgent:
                 if decision.final_answer and decision.action is None:
                     # 💡 学习提示：把 AI 的最终回答也存入记忆，
                     # 下一次用户提问时，AI 能看到这次的问答历史
-                    self.memory.add_message("assistant", decision.final_answer, importance=2.0)
+                    self.memory.add_message(
+                        "assistant", decision.final_answer, importance=2.0
+                    )
                     return AgentResponse(answer=decision.final_answer, steps=steps)
 
                 # 情况 B：没有行动也没有最终答案 → 兜底结束（AI 输出了纯文字但没有 JSON 的 action 字段）
@@ -293,7 +329,11 @@ class ReActAgent:
                 # 💡 学习提示：工具可能成功也可能失败。
                 # 成功时用工具返回的内容作为"观察"，失败时把错误信息作为"观察"传给 AI，
                 # 让 AI 知道"这个工具失败了，我需要换个办法"
-                observation = tool_result.content if tool_result.success else str(tool_result.error)
+                observation = (
+                    tool_result.content
+                    if tool_result.success
+                    else str(tool_result.error)
+                )
 
                 # echo 工具是特殊的"直通"工具——直接把文字原样返回，无需再问 LLM
                 if tool_result.success and decision.action == "echo":
@@ -316,7 +356,9 @@ class ReActAgent:
             # --- 超出最大步数，给出兜底回复 ---
             # 💡 学习提示：importance=1.0 比正常答案低，表示这是一个"不太重要"的兜底信息，
             # 记忆系统可以在空间不足时优先丢弃低重要性的记录
-            fallback = "I reached the maximum reasoning steps before producing a final answer."
+            fallback = (
+                "I reached the maximum reasoning steps before producing a final answer."
+            )
             self.memory.add_message("assistant", fallback, importance=1.0)
             return AgentResponse(answer=fallback, steps=steps)
 
@@ -333,6 +375,44 @@ class ReActAgent:
             # 💡 学习提示：logger.exception() 会自动把完整堆栈写入日志，方便事后排查
             logger.exception("Agent execution failed")
             raise AgentError(ErrorCode.AGENT_EXECUTION_FAILED, str(exc)) from exc
+
+    async def stream_run(self, query: str) -> AsyncIterator[StreamEvent]:
+        """
+        流式执行入口，逐步产出推理、工具和最终答案事件。
+
+        功能说明：对外提供异步生成器接口，让调用方可以边执行边收到事件。
+        参数说明：query 是用户输入的问题。
+        返回值：AsyncIterator[StreamEvent]，调用方可用 async for 消费。
+        设计思路：
+            保持 run() 的稳定返回类型不变，新增 stream_run() 作为兼容扩展。
+            UI/WebSocket 层可以消费 StreamEvent，实现首字/首事件快速返回。
+        使用示例：
+            async for event in agent.stream_run("检查服务"):
+                print(event.event_type, event.content)
+
+        🔍 原理讲解：
+        这里的“流式”是兼容型流式：先发 start，内部仍复用 run() 完整执行，再把步骤和最终答案逐个 yield 出来。
+        输入：用户 query
+        处理过程：yield start → await run(query) → yield step → yield final
+        输出：一串 StreamEvent
+
+        ⚡ 优化建议：未来可以把 run() 内部循环也改成边推理边 yield，这样首个 step 会更早返回。
+        """
+        if not query.strip():
+            raise AgentError(
+                ErrorCode.AGENT_EXECUTION_FAILED, "Query must not be empty"
+            )
+        yield StreamEvent(
+            event_type="start", content=query, step_index=0
+        )  # 💡 学习提示：先发 start，让 UI 能立即显示“任务已开始”。
+        response = await self.run(
+            query
+        )  # 💡 学习提示：复用已有 run()，避免为流式输出复制一套 ReAct 主循环。
+        for index, step in enumerate(response.steps, start=1):
+            yield StreamEvent(event_type="step", content=step, step_index=index)
+        yield StreamEvent(
+            event_type="final", content=response.answer, step_index=len(response.steps)
+        )
 
     def _parse_decision(self, raw_content: str) -> ReActDecision:
         """
@@ -398,7 +478,9 @@ class ReActAgent:
                 # 防止 LLM 返回 "action": null（JSON null → Python None）时被当成工具名
                 action=str(action_value) if isinstance(action_value, str) else None,
                 action_input=arguments,
-                final_answer=str(answer_value) if isinstance(answer_value, str) else None,
+                final_answer=(
+                    str(answer_value) if isinstance(answer_value, str) else None
+                ),
             )
         except json.JSONDecodeError:
             # 💡 学习提示：LLM 返回了非 JSON 文字（最常见的兜底情况）

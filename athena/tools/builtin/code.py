@@ -22,11 +22,20 @@ from pathlib import Path
 
 from athena.tools import ToolRegistry
 
+LANGUAGE_BY_SUFFIX = {
+    ".py": "python",
+    ".js": "javascript",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    ".java": "java",
+    ".c": "c",
+    ".cpp": "cpp",
+}
 
-LANGUAGE_BY_SUFFIX = {".py": "python", ".js": "javascript", ".ts": "typescript", ".tsx": "tsx", ".java": "java", ".c": "c", ".cpp": "cpp"}
 
-
-def register_code_tools(registry: ToolRegistry, workspace_root: Path | None = None) -> None:
+def register_code_tools(
+    registry: ToolRegistry, workspace_root: Path | None = None
+) -> None:
     """注册基于 Tree-sitter 的代码结构查看工具。"""
 
     root = (workspace_root or Path.cwd()).resolve()
@@ -49,10 +58,11 @@ def register_code_tools(registry: ToolRegistry, workspace_root: Path | None = No
         if language is None:
             raise ValueError(f"unsupported source suffix: {target.suffix}")
         parser = _load_parser(language)
-        source = target.read_bytes()
+        source = target.read_text(encoding="utf-8")
         tree = parser.parse(source)
+        root_node = tree.root_node() if callable(tree.root_node) else tree.root_node
         lines: list[str] = []
-        _walk(tree.root_node, lines, max_depth=3)
+        _walk(root_node, lines, max_depth=3)
         return "\n".join(lines[:200])
 
 
@@ -60,14 +70,38 @@ def _load_parser(language: str):
     try:
         from tree_sitter_language_pack import get_parser
     except ImportError as exc:
-        raise RuntimeError("tree-sitter-language-pack is required for code parsing") from exc
+        raise RuntimeError(
+            "tree-sitter-language-pack is required for code parsing"
+        ) from exc
     return get_parser(language)
 
 
 def _walk(node, lines: list[str], depth: int = 0, max_depth: int = 3) -> None:
     if depth > max_depth:
         return
-    lines.append(f"{'  ' * depth}{node.type} [{node.start_point.row + 1}:{node.start_point.column + 1}]")
-    for child in node.children:
-        if child.is_named:
+    node_type = getattr(node, "type", getattr(node, "kind", "unknown"))
+    if callable(node_type):
+        node_type = node_type()
+    start_point = getattr(node, "start_point", getattr(node, "start_position", (0, 0)))
+    if callable(start_point):
+        start_point = start_point()
+    if hasattr(start_point, "row") and hasattr(start_point, "column"):
+        row = start_point.row
+        column = start_point.column
+    else:
+        row = start_point[0]
+        column = start_point[1]
+    lines.append(f"{'  ' * depth}{node_type} [{row + 1}:{column + 1}]")
+    children = getattr(node, "children", None)
+    if children is not None:
+        for child in children:
+            if child.is_named:
+                _walk(child, lines, depth + 1, max_depth)
+        return
+    named_child_count = getattr(node, "named_child_count", 0)
+    if callable(named_child_count):
+        named_child_count = named_child_count()
+    for index in range(named_child_count):
+        child = node.named_child(index)
+        if child is not None:
             _walk(child, lines, depth + 1, max_depth)

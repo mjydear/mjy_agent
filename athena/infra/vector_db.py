@@ -10,7 +10,7 @@
    ① InMemoryVectorStore  → 纯内存实现，零依赖，用于本地开发和单元测试
    ② MilvusVectorStore    → 生产级向量数据库，支持亿级向量高速检索
    ③ VectorStore Protocol → 统一接口，上层代码无感知切换两种实现
-   
+
    设计的核心思想：让 Agent 开发/测试阶段不依赖任何外部服务，
    切换到生产环境只需改配置，不改业务逻辑代码。
 📚 学习重点：
@@ -20,18 +20,22 @@
    4. 幂等初始化（Idempotent Setup）：_ensure_collection() 的防重复创建逻辑
 """
 
-from __future__ import annotations  # 💡 学习提示：支持类型注解中的前向引用，与 llm.py 保持一致
+from __future__ import (  # 💡 学习提示：支持类型注解中的前向引用，与 llm.py 保持一致
+    annotations,
+)
 
-import logging
 import asyncio
+import logging
 from collections.abc import Sequence
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 from pydantic import BaseModel, Field
 
 from athena.exceptions import ErrorCode, VectorStoreError
 
-logger = logging.getLogger(__name__)  # 💡 学习提示：模块级 logger，日志会显示 "athena.infra.vector_db"，便于定位问题
+logger = logging.getLogger(
+    __name__
+)  # 💡 学习提示：模块级 logger，日志会显示 "athena.infra.vector_db"，便于定位问题
 
 
 # ============================================================
@@ -65,6 +69,7 @@ class MemoryDocument(BaseModel):
         - content 用来把搜索结果拼回提示词（让 AI 读懂原文）
 
     """
+
     """
     🔍 原理讲解：什么是"向量嵌入"（Embedding）？
 
@@ -91,6 +96,7 @@ class MemoryDocument(BaseModel):
 # 📌 接口层：定义"向量库能做什么"
 # ============================================================
 
+
 class VectorStore(Protocol):
     """
     向量存储的"接口契约"（Protocol）。
@@ -113,13 +119,16 @@ class VectorStore(Protocol):
     async def add(self, document: MemoryDocument) -> None:
         """Persist one memory document."""
 
-    async def search(self, embedding: Sequence[float], top_k: int) -> Sequence[MemoryDocument]:
+    async def search(
+        self, embedding: Sequence[float], top_k: int
+    ) -> Sequence[MemoryDocument]:
         """Return the most relevant memory documents."""
 
 
 # ============================================================
 # 📌 实现层 ①：内存版（用于测试和本地开发）
 # ============================================================
+
 
 class InMemoryVectorStore(BaseModel):
     """
@@ -172,7 +181,9 @@ class InMemoryVectorStore(BaseModel):
         """
         self.documents.append(document)
 
-    async def search(self, embedding: Sequence[float], top_k: int) -> Sequence[MemoryDocument]:
+    async def search(
+        self, embedding: Sequence[float], top_k: int
+    ) -> Sequence[MemoryDocument]:
         """
         通过余弦相似度在内存中搜索最相关的文档。
 
@@ -204,12 +215,15 @@ class InMemoryVectorStore(BaseModel):
             key=lambda document: _cosine_similarity(embedding, document.embedding),
             reverse=True,  # 💡 学习提示：reverse=True 表示降序排列，相似度最高的排在最前面
         )
-        return ranked[:top_k]  # 💡 学习提示：Python 切片，取前 top_k 个，如果文档总数不够则返回全部
+        return ranked[
+            :top_k
+        ]  # 💡 学习提示：Python 切片，取前 top_k 个，如果文档总数不够则返回全部
 
 
 # ============================================================
 # 📌 实现层 ②：Milvus 生产版（用于真实部署）
 # ============================================================
+
 
 class MilvusVectorStore(BaseModel):
     """
@@ -275,7 +289,9 @@ class MilvusVectorStore(BaseModel):
             logger.exception("Milvus add failed")
             raise VectorStoreError(ErrorCode.VECTOR_STORE_FAILED, str(exc)) from exc
 
-    async def search(self, embedding: Sequence[float], top_k: int) -> Sequence[MemoryDocument]:
+    async def search(
+        self, embedding: Sequence[float], top_k: int
+    ) -> Sequence[MemoryDocument]:
         """
         异步地在 Milvus 中搜索语义相似的记忆文档。
 
@@ -317,14 +333,18 @@ class MilvusVectorStore(BaseModel):
             data=[
                 {
                     "id": document.doc_id,
-                    "vector": list(document.embedding),  # 💡 学习提示：Sequence 转 list，pymilvus 需要标准列表类型
+                    "vector": list(
+                        document.embedding
+                    ),  # 💡 学习提示：Sequence 转 list，pymilvus 需要标准列表类型
                     "content": document.content,
                     "metadata": document.metadata,
                 }
             ],
         )
 
-    def _search_sync(self, embedding: Sequence[float], top_k: int) -> Sequence[MemoryDocument]:
+    def _search_sync(
+        self, embedding: Sequence[float], top_k: int
+    ) -> Sequence[MemoryDocument]:
         """
         在工作线程中执行的同步 Milvus 搜索逻辑（内部私有方法）。
 
@@ -357,9 +377,14 @@ class MilvusVectorStore(BaseModel):
         self._ensure_collection(client)
         raw_results = client.search(
             collection_name=self.collection_name,
-            data=[list(embedding)],  # 💡 学习提示：data 是"向量列表的列表"，支持批量查询，这里只查 1 个所以包一层 []
+            data=[
+                list(embedding)
+            ],  # 💡 学习提示：data 是"向量列表的列表"，支持批量查询，这里只查 1 个所以包一层 []
             limit=top_k,
-            output_fields=["content", "metadata"],  # 💡 学习提示：指定要返回的字段，不写默认只返回 id 和距离，content 就拿不到了
+            output_fields=[
+                "content",
+                "metadata",
+            ],  # 💡 学习提示：指定要返回的字段，不写默认只返回 id 和距离，content 就拿不到了
         )
         # 💡 学习提示：raw_results[0] 取第一个查询的结果，因为我们只查了一个向量
         first_page = cast(Sequence[object], raw_results[0] if raw_results else [])
@@ -387,7 +412,7 @@ class MilvusVectorStore(BaseModel):
             )
         return documents
 
-    def _client(self) -> object:
+    def _client(self) -> Any:
         """
         懒加载（Lazy Loading）方式创建 Milvus 客户端。
 
@@ -407,7 +432,9 @@ class MilvusVectorStore(BaseModel):
         # ⚡ 优化建议：MVP 中每次操作都创建新连接，生产环境应该使用连接池或缓存客户端实例。
         # 可以用 @cached_property 或把 client 存为实例字段，避免重复建立 TCP 连接。
         """
-        from pymilvus import MilvusClient  # 💡 学习提示：延迟导入——只在真正调用时才加载 pymilvus
+        from pymilvus import (  # 💡 学习提示：延迟导入——只在真正调用时才加载 pymilvus
+            MilvusClient,
+        )
 
         return MilvusClient(uri=self.uri)
 
@@ -448,6 +475,7 @@ class MilvusVectorStore(BaseModel):
 # ============================================================
 # 📌 辅助协议层：给类型检查器用的 Milvus 接口描述
 # ============================================================
+
 
 class MilvusClientProtocol(Protocol):
     """
@@ -503,6 +531,7 @@ class MilvusClientProtocol(Protocol):
 # 📌 算法层：余弦相似度计算
 # ============================================================
 
+
 def _cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
     """
     计算两个向量之间的余弦相似度。
@@ -557,7 +586,9 @@ def _cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
         # 返回 0.0 而不是抛异常，是因为这个函数通常在 sorted() 的 key 里调用，
         # 如果抛异常会中断整个排序过程。返回 0 让不匹配的文档排到最后，静默降级。
         return 0.0
-    dot_product = sum(left_value * right_value for left_value, right_value in zip(left, right))
+    dot_product = sum(
+        left_value * right_value for left_value, right_value in zip(left, right)
+    )
     # 💡 学习提示：** 0.5 等价于 math.sqrt()，这里用幂运算避免再 import math
     left_norm = sum(value * value for value in left) ** 0.5
     right_norm = sum(value * value for value in right) ** 0.5

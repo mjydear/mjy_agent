@@ -25,7 +25,9 @@ from pathlib import Path
 from athena.tools import ToolRegistry
 
 
-def register_file_tools(registry: ToolRegistry, workspace_root: Path | None = None) -> None:
+def register_file_tools(
+    registry: ToolRegistry, workspace_root: Path | None = None
+) -> None:
     """注册受工作区边界保护的文件工具。"""
 
     root = (workspace_root or Path.cwd()).resolve()
@@ -69,5 +71,9 @@ def register_file_tools(registry: ToolRegistry, workspace_root: Path | None = No
         target = resolve(path)
         if not target.is_dir():
             raise NotADirectoryError(path)
-        entries = sorted(child.relative_to(root).as_posix() for child in target.rglob("*") if child.is_file())
+        entries = sorted(
+            child.relative_to(root).as_posix()
+            for child in target.rglob("*")
+            if child.is_file()
+        )
         return "\n".join(entries[:limit])

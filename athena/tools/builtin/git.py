@@ -25,7 +25,11 @@ from pathlib import Path
 from athena.tools import SecuritySandbox, ToolRegistry
 
 
-def register_git_tools(registry: ToolRegistry, workspace_root: Path | None = None, sandbox: SecuritySandbox | None = None) -> None:
+def register_git_tools(
+    registry: ToolRegistry,
+    workspace_root: Path | None = None,
+    sandbox: SecuritySandbox | None = None,
+) -> None:
     """注册经过沙箱审计的 Git 只读工具。"""
 
     root = (workspace_root or Path.cwd()).resolve()

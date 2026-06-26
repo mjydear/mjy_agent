@@ -58,7 +58,10 @@ class MetricsRegistry:
         self.timings[name].append(duration_seconds)
 
     def snapshot(self) -> dict[str, object]:
-        return {"counters": dict(self.counters), "timings": {key: list(values) for key, values in self.timings.items()}}
+        return {
+            "counters": dict(self.counters),
+            "timings": {key: list(values) for key, values in self.timings.items()},
+        }
 
 
 @contextlib.contextmanager

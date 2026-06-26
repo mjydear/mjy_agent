@@ -140,6 +140,7 @@ Demo 视频/GIF 建议录制后放入 `assets/`，README 中可替换为：
 - [FAQ.md](FAQ.md)
 - [docs/demos/demo_guide.md](docs/demos/demo_guide.md)
 - [docs/benchmarks/performance_report.md](docs/benchmarks/performance_report.md)
+- [docs/features/enterprise_landing_upgrade_plan.md](docs/features/enterprise_landing_upgrade_plan.md)
 - [docs/interview/resume.md](docs/interview/resume.md)
 - [docs/interview/questions.md](docs/interview/questions.md)
 - [docs/interview/demo_script.md](docs/interview/demo_script.md)

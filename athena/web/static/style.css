@@ -7,118 +7,416 @@
 📚 学习重点：看 class 如何对应 app.js 创建的 DOM 元素，例如 message-bubble、session-card、trace-item。
 */
 
+/*
+🎨 设计令牌（Design Tokens）：集中管理配色，换肤只改这里。
+参考 Grafana / 阿里云容器服务的克制专业风格。
+*/
+:root {
+  --color-primary: #165dff;
+  --color-primary-hover: #4080ff;
+  --color-primary-soft: #e8f3ff;
+  --color-success: #00b42a;
+  --color-warning: #ff7d00;
+  --color-danger: #f53f3f;
+
+  --bg: #f7f8fa;
+  --surface: #ffffff;
+  --border: #e5e6eb;
+  --border-strong: #c9cdd4;
+  --text: #1d2129;
+  --text-secondary: #86909c;
+  --fill-hover: #f2f3f5;
+}
+
 body {
-  font-family: Georgia, "Noto Serif SC", "Microsoft YaHei", serif; /* 💡 学习提示：使用 serif 字体让控制台和普通后台模板拉开视觉差异。 */
+  /* 💡 学习提示：改用系统无衬线字体，贴近现代云控制台的观感，去掉 serif 的“后台模板感”。 */
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
-.mode-button,
-.tab-button,
-.cloud-mode-button {
-  border-radius: 0.375rem;
-  padding: 0.55rem 0.75rem;
-  text-align: left;
-  transition: background-color 120ms ease, color 120ms ease; /* 💡 学习提示：只给颜色做过渡，避免布局动画影响阅读稳定性。 */
+/* ============================================================
+   📌 细滚动条：统一三栏滚动观感
+   ============================================================ */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #e0e2e7;
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
 }
 
+/* ============================================================
+   📌 侧边栏分区小标题
+   ============================================================ */
+.sidebar-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+/* ============================================================
+   📌 通用按钮（主/次）
+   ============================================================ */
+.btn {
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background-color 0.2s ease, color 0.2s ease,
+    border-color 0.2s ease, opacity 0.2s ease;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-primary {
+  background: var(--color-primary);
+  color: #fff;
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+.btn-secondary {
+  background: var(--surface);
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+.btn-secondary:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+/* ============================================================
+   📌 输入框
+   ============================================================ */
+.app-input {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--surface);
+  outline: none;
+  font-family: inherit;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.app-input::placeholder {
+  color: var(--text-secondary);
+}
+.app-input:focus {
+  border-color: var(--color-primary); /* 💡 学习提示：聚焦时主色描边 + 柔光，提示当前输入焦点。 */
+  box-shadow: 0 0 0 2px rgba(22, 93, 255, 0.12);
+}
+
+/* ============================================================
+   📌 访问模式 / 云子模式 / Tab
+   ============================================================ */
 .mode-button {
-  background: rgba(255, 255, 255, 0.42);
-  color: #3f4c59;
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-radius: 6px;
+  padding: 9px 12px;
+  font-size: 13px;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
-
-.cloud-mode-button {
-  background: rgba(255, 255, 255, 0.34);
-  border: 1px solid #d8cfbf;
-  color: #5c5146;
-  font-size: 0.78rem;
-  text-align: center;
+.mode-button:hover {
+  background: var(--fill-hover);
 }
-
-.confirmation-button {
-  border-radius: 0.5rem;
-  background: #17324d;
-  color: #fffaf2;
-  font-size: 0.82rem;
-  font-weight: 700;
-  padding: 0.45rem 0.8rem;
-}
-
-.confirmation-button:disabled {
-  opacity: 0.55;
-}
-
-.mode-button.active,
-.tab-button.active,
-.cloud-mode-button.active {
-  background: #17324d; /* 💡 学习提示：active 状态用强对比色，用户能快速判断当前模式或 Tab。 */
+.mode-button.active {
+  background: var(--color-primary); /* 💡 学习提示：选中态主色填充 + 白字，状态一眼可辨。 */
   color: #fff;
 }
 
-.tab-button {
+.cloud-mode-button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
   text-align: center;
-  color: #5c5146;
+  color: var(--text);
+  background: var(--surface);
+  cursor: pointer;
+  transition: background-color 0.2s ease, color 0.2s ease,
+    border-color 0.2s ease;
+}
+.cloud-mode-button:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+.cloud-mode-button.active {
+  background: var(--color-primary);
+  color: #fff;
+  border-color: var(--color-primary);
 }
 
+.tab-button {
+  flex: 1;
+  text-align: center;
+  border: none;
+  border-bottom: 2px solid transparent; /* 💡 学习提示：用下划线表达选中态，比整块底色更轻量克制。 */
+  background: transparent;
+  padding: 8px 4px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+.tab-button:hover {
+  color: var(--text);
+}
+.tab-button.active {
+  color: var(--color-primary);
+  border-bottom-color: var(--color-primary);
+  font-weight: 600;
+}
+
+/* ============================================================
+   📌 高危确认按钮
+   ============================================================ */
+.confirmation-button {
+  border: none;
+  border-radius: 6px;
+  background: var(--color-primary);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: background-color 0.2s ease, opacity 0.2s ease;
+}
+.confirmation-button:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+.confirmation-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ============================================================
+   📌 会话卡片
+   ============================================================ */
 .session-card {
-  border: 1px solid #d8cfbf;
-  border-radius: 0.5rem;
-  background: rgba(255, 255, 255, 0.55);
-  padding: 0.75rem;
+  width: 100%;
   text-align: left;
+  border: 1px solid var(--border);
+  border-left: 3px solid transparent;
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
 }
-
+.session-card:hover {
+  border-color: var(--border-strong);
+}
 .session-card.active {
-  border-color: #17324d;
-  background: #fff; /* 💡 学习提示：选中会话用边框 + 背景双重提示，比只改颜色更清晰。 */
+  border-left-color: var(--color-primary); /* 💡 学习提示：选中会话用左侧主色条 + 浅蓝底，层级清晰。 */
+  background: #f2f7ff;
 }
 
+/* ============================================================
+   📌 状态徽标
+   ============================================================ */
+.status-pill {
+  border-radius: 9999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+.status-pill--ready {
+  background: #e8ffea;
+  color: var(--color-success);
+}
+.status-pill--busy {
+  background: #fff7e8;
+  color: var(--color-warning);
+}
+.status-pill--error {
+  background: #ffece8;
+  color: var(--color-danger);
+}
+
+/* ============================================================
+   📌 聊天消息气泡
+   ============================================================ */
 .message-row {
   display: flex;
 }
-
 .message-row.user {
   justify-content: flex-end; /* 💡 学习提示：用户消息靠右、助手消息靠左，是聊天界面的常见空间隐喻。 */
 }
 
 .message-bubble {
-  max-width: min(42rem, 88%); /* 💡 学习提示：限制最大宽度能让长文本更容易阅读，避免一行太长。 */
-  border-radius: 0.75rem;
-  padding: 0.75rem 0.9rem;
-  font-size: 0.95rem;
+  max-width: min(42rem, 86%); /* 💡 学习提示：限制最大宽度能让长文本更容易阅读，避免一行太长。 */
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 14px;
   line-height: 1.65;
   white-space: pre-wrap; /* 💡 学习提示：保留换行和空格，Agent 输出步骤列表或报告时不会挤成一行。 */
+  word-break: break-word;
 }
-
 .message-bubble.user {
-  background: #17324d;
-  color: #fff;
+  background: var(--color-primary-soft); /* 💡 学习提示：用户气泡浅蓝底，弱化为输入回显，避免与主色按钮抢视觉。 */
+  color: var(--text);
 }
-
 .message-bubble.assistant {
-  border: 1px solid #e3ddd1;
-  background: #fff;
-  color: #1f2933;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04); /* 💡 学习提示：极淡阴影制造卡片悬浮感，但不喧宾夺主。 */
 }
-
 .message-bubble.thought {
-  border: 1px solid #c8d6d0;
-  background: #eef6f1;
-  color: #244635;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: #4e5969;
 }
 
+/* ============================================================
+   📌 流式打字指示器
+   ============================================================ */
+.typing-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+}
+.typing-indicator span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  opacity: 0.4;
+  animation: typing-bounce 1.2s infinite ease-in-out;
+}
+.typing-indicator span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.typing-indicator span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes typing-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+/* ============================================================
+   📌 轨迹 / 指标卡片
+   ============================================================ */
 .trace-item {
-  border: 1px solid #ddd3c4;
-  border-radius: 0.5rem;
-  background: rgba(255, 255, 255, 0.6);
-  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 12px;
+}
+details.trace-item > summary {
+  list-style: none;
+}
+details.trace-item > summary::-webkit-details-marker {
+  display: none;
 }
 
 pre {
   overflow-x: auto; /* 💡 学习提示：JSON/代码可能很长，横向滚动比强行换行更不容易破坏结构。 */
-  border-radius: 0.5rem;
-  background: #18232f;
-  color: #e8edf2;
-  padding: 0.75rem;
-  font-size: 0.78rem;
+  border-radius: 6px;
+  background: #1d2129;
+  color: #e5e6eb;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ============================================================
+   📌 右侧详情面板：折叠 / 展开
+   ============================================================ */
+.detail-aside {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  transition: width 0.3s ease; /* 💡 学习提示：宽度过渡让折叠/展开有平滑动画。 */
+}
+.detail-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.tab-group {
+  display: flex;
+  flex: 1;
+  gap: 4px;
+  min-width: 0;
+}
+.toggle-detail-btn {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+.toggle-detail-btn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+.detail-panel {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+.detail-aside.collapsed .tab-group,
+.detail-aside.collapsed .detail-panel {
+  display: none; /* 💡 学习提示：折叠态只保留切换按钮，收成 48px 图标栏。 */
+}
+
+@media (min-width: 1024px) {
+  .detail-aside {
+    width: 360px;
+    height: 100vh;
+  }
+  .detail-aside.collapsed {
+    width: 48px;
+  }
+  .detail-aside.collapsed .detail-header {
+    justify-content: center;
+    padding: 8px 0;
+  }
 }
 
 /*

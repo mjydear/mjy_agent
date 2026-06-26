@@ -41,6 +41,8 @@ const elements = {
   input: document.getElementById("message-input"),
   send: document.getElementById("send-message"),
   cancel: document.getElementById("cancel-stream"),
+  detailAside: document.getElementById("detail-aside"), // 💡 学习提示：右侧面板容器，折叠时改变它的宽度。
+  toggleDetail: document.getElementById("toggle-detail"),
 };
 
 /**
@@ -54,9 +56,9 @@ const elements = {
  */
 function setStatus(text, busy = false) {
   elements.statusPill.textContent = text;
-  elements.statusPill.className = busy
-    ? "rounded-full bg-[#fff0d6] px-3 py-1 text-xs font-medium text-[#8a5a00]"
-    : "rounded-full bg-[#e7f1e8] px-3 py-1 text-xs font-medium text-[#2d6a3f]";
+  // 💡 学习提示：状态样式收敛成三种语义类（就绪/忙碌/错误），由 CSS 统一控制配色。
+  const variant = text === "Error" ? "error" : busy ? "busy" : "ready";
+  elements.statusPill.className = `status-pill status-pill--${variant}`;
 }
 
 /**
@@ -90,9 +92,10 @@ async function api(path, options = {}) {
  * 使用示例：await createSession()
  */
 async function createSession() {
+  const visibleSessionCount = getVisibleSessions().length;
   const payload = await api("/api/sessions", {
     method: "POST",
-    body: JSON.stringify({ title: `Athena Session ${state.sessions.length + 1}` }),
+    body: JSON.stringify({ title: `Athena Session ${visibleSessionCount + 1}` }),
   });
   state.currentSessionId = payload.session.session_id;
   await loadSessions();
@@ -130,6 +133,19 @@ async function selectSession(sessionId) {
 }
 
 /**
+ * 获取侧边栏需要展示的会话。
+ *
+ * 功能说明：隐藏历史空会话，但保留当前刚创建的空会话。
+ * 参数说明：无，读取全局 state。
+ * 返回值：过滤后的 SessionSummary 列表。
+ * 设计思路：页面刷新产生过的空会话不应该继续污染侧边栏；用户刚点“新建会话”时仍要看到当前会话。
+ * 使用示例：getVisibleSessions()
+ */
+function getVisibleSessions() {
+  return state.sessions.filter((session) => session.message_count > 0 || session.session_id === state.currentSessionId);
+}
+
+/**
  * 渲染左侧会话列表。
  *
  * 功能说明：根据 state.sessions 创建会话按钮，并标记当前选中的会话。
@@ -140,10 +156,10 @@ async function selectSession(sessionId) {
  */
 function renderSessions() {
   elements.sessionList.innerHTML = "";
-  state.sessions.forEach((session) => {
+  getVisibleSessions().forEach((session) => {
     const button = document.createElement("button");
     button.className = `session-card ${session.session_id === state.currentSessionId ? "active" : ""}`;
-    button.innerHTML = `<div class="font-semibold text-sm">${escapeHtml(session.title)}</div><div class="mt-1 text-xs text-[#6c5f4d]">${session.message_count} 条消息</div>`; // 💡 学习提示：用户可控文本进 innerHTML 前必须 escapeHtml，防止脚本注入。
+    button.innerHTML = `<div class="font-semibold text-sm text-[#1d2129]">${escapeHtml(session.title)}</div><div class="mt-1 text-xs text-[#86909c]">${session.message_count} 条消息</div>`; // 💡 学习提示：用户可控文本进 innerHTML 前必须 escapeHtml，防止脚本注入。
     button.addEventListener("click", () => selectSession(session.session_id));
     elements.sessionList.appendChild(button);
   });
@@ -285,6 +301,8 @@ async function streamChat(message) {
   state.abortController = new AbortController();
   elements.cancel.disabled = false;
   const assistantBubble = addMessage("assistant", "", "assistant");
+  // 💡 学习提示：先放一个三点跳动的打字指示器，最终答案到达后会被 textContent 覆盖。
+  assistantBubble.innerHTML = '<span class="typing-indicator"><span></span><span></span><span></span></span>';
   try {
     const response = await fetch("/api/chat/stream", {
       method: "POST",
@@ -311,6 +329,8 @@ async function streamChat(message) {
   } finally {
     elements.cancel.disabled = true;
     state.abortController = null;
+    // 💡 学习提示：若流中断且仍停留在打字指示器，清空它避免一直跳动。
+    if (assistantBubble.querySelector(".typing-indicator")) assistantBubble.textContent = "";
     renderDetailPanel();
   }
 }
@@ -417,7 +437,7 @@ async function refreshMetrics() {
  * 使用示例：metricCard("成功率", "100%")
  */
 function metricCard(label, value) {
-  return `<div class="trace-item"><div class="text-xs text-[#6c5f4d]">${label}</div><div class="mt-1 text-2xl font-semibold text-[#17324d]">${value}</div></div>`;
+  return `<div class="trace-item"><div class="text-xs text-[#86909c]">${label}</div><div class="mt-1 text-2xl font-semibold text-[#165dff]">${value}</div></div>`;
 }
 
 /**
@@ -435,15 +455,15 @@ function renderDetailPanel() {
     return;
   }
   if (state.activeTab === "benchmark") {
-    elements.detailPanel.innerHTML = state.benchmarkReport ? `<pre>${escapeHtml(state.benchmarkReport)}</pre>` : `<p class="text-sm text-[#6c5f4d]">尚未运行 Benchmark。</p>`;
+    elements.detailPanel.innerHTML = state.benchmarkReport ? `<pre>${escapeHtml(state.benchmarkReport)}</pre>` : `<p class="text-sm text-[#86909c]">尚未运行 Benchmark。</p>`;
     return;
   }
   if (!state.traceEvents.length) {
-    elements.detailPanel.innerHTML = `<p class="text-sm text-[#6c5f4d]">当前任务还没有轨迹。</p>`;
+    elements.detailPanel.innerHTML = `<p class="text-sm text-[#86909c]">当前任务还没有轨迹。</p>`;
     return;
   }
   elements.detailPanel.innerHTML = state.traceEvents.map((event) => `<details class="trace-item mb-3" open>
-    <summary class="cursor-pointer text-sm font-semibold text-[#17324d]">#${event.step_index || 0} ${escapeHtml(event.event_type)}</summary>
+    <summary class="cursor-pointer text-sm font-semibold text-[#165dff]">#${event.step_index || 0} ${escapeHtml(event.event_type)}</summary>
     <pre class="mt-3">${escapeHtml(formatMaybeJson(event.content))}</pre>
   </details>`).join("");
 }
@@ -552,7 +572,35 @@ document.querySelectorAll(".tab-button").forEach((button) => button.addEventList
   renderDetailPanel();
 }));
 
-createSession().catch((error) => {
+// 💡 学习提示：折叠/展开右侧详情面板。原生 JS 切换 collapsed 类，宽度过渡由 CSS 负责，箭头随状态翻转。
+elements.toggleDetail.addEventListener("click", () => {
+  const collapsed = elements.detailAside.classList.toggle("collapsed");
+  elements.toggleDetail.textContent = collapsed ? "«" : "»";
+  elements.toggleDetail.title = collapsed ? "展开详情面板" : "折叠详情面板";
+});
+
+/**
+ * 初始化控制台。
+ *
+ * 功能说明：先拉取已有会话；有会话则选中最近一个，没有才新建。
+ * 参数说明：无。
+ * 返回值：Promise<void>。
+ * 设计思路：刷新页面不应每次都创建空会话，否则侧边栏会堆积一堆空的“New Athena Session”。
+ * 使用示例：init()
+ */
+async function init() {
+  await loadSessions();
+  const latestActiveSession = [...state.sessions].reverse().find((session) => session.message_count > 0);
+  if (latestActiveSession) {
+    await selectSession(latestActiveSession.session_id); // 💡 学习提示：默认恢复到最近一个有内容的会话，刷新后体验更连续。
+    return;
+  }
+  state.currentSessionId = null;
+  renderSessions();
+  renderMessages([]);
+}
+
+init().catch((error) => {
   setStatus("Error");
   addMessage("assistant", error.message, "thought");
 });

@@ -313,36 +313,39 @@ class LLMClientFactory:
     LLM 客户端的"工厂"——统一负责创建和验证客户端对象。
 
     功能说明：
-        你不需要直接构造 LiteLLMClient，而是告诉工厂"我要什么配置"，
+        你不需要直接构造 LiteLLMClient 或 LLMGateway，而是告诉工厂"我要什么配置"，
         工厂帮你检查前置条件、完成初始化、返回可用的客户端。
         就像去餐厅点餐，你不用进厨房自己做，告诉服务员需要什么就行。
 
     设计思路：
         工厂模式（Factory Pattern）的好处：
         ① 统一入口：所有客户端都从这里创建，不会遗漏检查步骤（如忘记验证 API Key）
-        ② 解耦：调用方不需要知道具体类名是 LiteLLMClient，只和工厂打交道
-        ③ 易扩展：将来要支持 AzureClient、BedrockClient，只改工厂，调用方代码不变
+        ② 解耦：调用方不需要知道具体类名，只和工厂打交道
+        ③ 易扩展：支持单 provider (LiteLLMClient) 和多 provider (LLMGateway) 两种模式
 
     使用示例：
+        # 单 provider 模式（向后兼容）
         client = LLMClientFactory.create(
             provider="litellm", model="gpt-4o",
             temperature=0.2, max_tokens=1024
         )
-        # client 已经过验证，可以直接使用
+        # 多 provider 模式
+        client = LLMClientFactory.create_from_settings(settings)
     """
 
     @staticmethod
-    # 💡 学习提示：@staticmethod 表示这个方法不依赖实例状态（没有 self）。
-    # 工厂方法通常设计为静态的，因为"创建对象"这个动作不需要先有一个工厂实例——
-    # 如果你必须先创建工厂实例再创建产品，那工厂本身就成了多余的包装。
     def create(
-        provider: str, model: str, temperature: float, max_tokens: int
+        provider: str,
+        model: str,
+        temperature: float,
+        max_tokens: int,
     ) -> LLMClient:
         """
-        创建并返回一个经过验证的 LLM 客户端。
+        创建并返回一个经过验证的 LLM 客户端（单 provider 模式，向后兼容）。
 
         功能说明：
             检查 provider 是否支持、必要的 API Key 是否设置，然后返回可用客户端。
+            当需要多 provider 负载均衡和 failover 时，请使用 create_from_settings()。
 
         参数说明：
             provider:    LLM 提供商，目前只支持 "litellm"
@@ -351,31 +354,19 @@ class LLMClientFactory:
             max_tokens:  最大生成 token 数
 
         返回值：
-            满足 LLMClient 协议的异步客户端对象
+            满足 LLMClient 协议的异步客户端对象（LiteLLMClient 实例）
 
         异常：
             LLMError: provider 不支持或 API Key 未设置时抛出
-
-        设计思路：
-            "快速失败"（Fail Fast）原则：在对象创建阶段就检查前置条件，
-            而不是等到真正调用 complete() 时才发现 Key 没设置。
-            这样能在程序启动时就暴露配置错误，而不是在运行中途崩溃。
         """
         if provider != "litellm":
-            # ⚡ 优化建议：可以改成 SUPPORTED_PROVIDERS = {"litellm"} 集合，
-            # 将来支持新 provider 时只需往集合里加一行，不用修改 if 条件本身，
-            # 更符合"开闭原则"（对扩展开放，对修改关闭）。
             raise LLMError(
                 ErrorCode.LLM_CALL_FAILED,
                 f"Unsupported LLM provider: {provider}",
             )
-        # 💡 学习提示：先应用别名映射（如把 OPENAI_API_KEY 复用给 Deepseek），
-        # 再检查 Key 是否存在，顺序很重要，不能反过来。
         _apply_provider_env_aliases(model)
         required_env = _required_api_key_env(model)
         if required_env and not os.getenv(required_env):
-            # 💡 学习提示：os.getenv() 返回 None 表示环境变量未设置，
-            # 这是 Python 中检查环境变量是否配置的标准惯用写法。
             raise LLMError(
                 ErrorCode.LLM_CALL_FAILED,
                 (
@@ -387,6 +378,61 @@ class LLMClientFactory:
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
+        )
+
+    @staticmethod
+    def create_from_settings(settings: object) -> LLMClient:
+        """Create an LLM client from AthenaSettings.
+
+        Automatically selects LLMGateway (multi-provider) or LiteLLMClient
+        (single-provider) based on the configuration.
+
+        Args:
+            settings: AthenaSettings instance with llm configuration.
+
+        Returns:
+            An LLMClient-compatible instance (LLMGateway or LiteLLMClient).
+
+        Raises:
+            LLMError: If provider validation fails.
+        """
+        from athena.infra.llm_gateway import LLMGateway, LLMGatewayConfig, LLMProviderConfig
+
+        llm_settings = settings.llm  # type: ignore[union-attr]
+
+        # Multi-provider mode: use LLMGateway
+        if llm_settings.providers:
+            provider_configs = [
+                LLMProviderConfig(
+                    name=p.name,
+                    provider=p.provider,
+                    model=p.model,
+                    api_key_env=p.api_key_env,
+                    api_base=p.api_base,
+                    weight=p.weight,
+                    timeout=p.timeout,
+                    max_retries=p.max_retries,
+                )
+                for p in llm_settings.providers
+            ]
+            gateway_config = LLMGatewayConfig(
+                providers=provider_configs,
+                default_temperature=llm_settings.temperature,
+                default_max_tokens=llm_settings.max_tokens,
+                load_balancing=llm_settings.load_balancing,
+                circuit_breaker_failures=llm_settings.circuit_breaker_failures,
+                circuit_breaker_recovery=llm_settings.circuit_breaker_recovery,
+                connection_pool_size=llm_settings.connection_pool_size,
+                connection_pool_per_host=llm_settings.connection_pool_per_host,
+            )
+            return LLMGateway(gateway_config)
+
+        # Single-provider mode (backward compatible): use LiteLLMClient
+        return LLMClientFactory.create(
+            provider=llm_settings.provider,
+            model=llm_settings.model,
+            temperature=llm_settings.temperature,
+            max_tokens=llm_settings.max_tokens,
         )
 
 

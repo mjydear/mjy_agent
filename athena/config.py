@@ -22,13 +22,79 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=False)
 from athena.exceptions import ConfigError, ErrorCode
 
 
-class LLMSettings(BaseModel):
-    """LLM gateway settings."""
+class LLMProviderItem(BaseModel):
+    """Single LLM provider configuration for multi-provider setups."""
 
+    name: str = Field(
+        default="default",
+        description="Human-readable provider identifier, e.g. 'openai-primary'",
+    )
+    provider: str = Field(
+        default="openai",
+        description="Provider type: openai, azure, deepseek, anthropic, etc.",
+    )
+    model: str = Field(
+        default="gpt-4o-mini",
+        description="Model name, e.g. 'gpt-4o', 'deepseek-chat'",
+    )
+    api_key_env: str = Field(
+        default="OPENAI_API_KEY",
+        description="Environment variable for the API key",
+    )
+    api_base: str | None = Field(
+        default=None,
+        description="Custom API base URL for proxies or Azure endpoints",
+    )
+    weight: float = Field(
+        default=1.0, ge=0.0, description="Load balancing weight"
+    )
+    timeout: float = Field(
+        default=60.0, ge=1.0, description="Request timeout in seconds"
+    )
+    max_retries: int = Field(
+        default=3, ge=0, description="Max retry attempts per provider"
+    )
+
+
+class LLMSettings(BaseModel):
+    """LLM gateway settings.
+
+    Supports both single-provider (legacy) and multi-provider configurations.
+    When 'providers' is populated, the LLMGateway is used instead of LiteLLMClient.
+    """
+
+    # Legacy single-provider fields (kept for backward compatibility)
     provider: str = "litellm"
     model: str = "gpt-4o-mini"
     temperature: float = 0.2
     max_tokens: PositiveInt = 1024
+
+    # Multi-provider configuration
+    providers: list[LLMProviderItem] = Field(
+        default_factory=list,
+        description="Multi-provider configuration list. When populated, "
+        "LLMGateway with connection pooling and failover is used.",
+    )
+    load_balancing: str = Field(
+        default="weighted",
+        description="Load balancing strategy: 'weighted' or 'round_robin'",
+    )
+    circuit_breaker_failures: int = Field(
+        default=5, ge=1,
+        description="Consecutive failures before circuit breaker opens",
+    )
+    circuit_breaker_recovery: float = Field(
+        default=30.0, ge=1.0,
+        description="Seconds before circuit breaker attempts recovery",
+    )
+    connection_pool_size: int = Field(
+        default=100, ge=1,
+        description="Max total HTTP connections in pool",
+    )
+    connection_pool_per_host: int = Field(
+        default=20, ge=1,
+        description="Max HTTP connections per host",
+    )
 
 
 class MemorySettings(BaseModel):

@@ -3,6 +3,31 @@ llm:
   model: deepseek/deepseek-chat
   temperature: 0.2
   max_tokens: 1024
+  # ── Multi-provider configuration (optional) ──
+  # When 'providers' is populated, LLMGateway with connection pooling,
+  # load balancing, and automatic failover is used instead of LiteLLMClient.
+  # providers:
+  #   - name: openai-primary
+  #     provider: openai
+  #     model: gpt-4o
+  #     api_key_env: OPENAI_API_KEY
+  #     weight: 3
+  #   - name: azure-fallback
+  #     provider: azure
+  #     model: gpt-4o
+  #     api_key_env: AZURE_OPENAI_API_KEY
+  #     api_base: https://your-resource.openai.azure.com
+  #     weight: 2
+  #   - name: deepseek-backup
+  #     provider: deepseek
+  #     model: deepseek-chat
+  #     api_key_env: DEEPSEEK_API_KEY
+  #     weight: 1
+  # load_balancing: weighted
+  # circuit_breaker_failures: 5
+  # circuit_breaker_recovery: 30.0
+  # connection_pool_size: 100
+  # connection_pool_per_host: 20
 memory:
   working_max_tokens: 8000
   vector_top_k: 5

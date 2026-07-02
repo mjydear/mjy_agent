@@ -1,25 +1,15 @@
 # ──────────────────────────────────────────────
-# Athena Legacy Config (backward compatible)
+# Athena Production Configuration
 # ──────────────────────────────────────────────
-# This file is kept for backward compatibility.
-# The new multi-environment config system is under config/ directory.
-# To use: ATHENA_ENV=dev|staging|prod athena web
+# Usage: ATHENA_ENV=prod athena web
 # ──────────────────────────────────────────────
-llm:
-  provider: litellm
-  model: deepseek/deepseek-chat
-  temperature: 0.2
-  max_tokens: 1024
-memory:
-  working_max_tokens: 8000
-  vector_top_k: 5
-agent:
-  max_steps: 6
+
 logging:
-  level: INFO
+  level: WARNING
+
 web:
-  host: 127.0.0.1
+  host: 0.0.0.0
   port: 8000
   cors_origins:
-    - "*"
-  session_ttl_seconds: 3600
+    - "https://your-frontend.example.com"
+  session_ttl_seconds: 1800

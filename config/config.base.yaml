@@ -1,0 +1,58 @@
+# ──────────────────────────────────────────────
+# Athena Base Configuration (shared defaults)
+# ──────────────────────────────────────────────
+# All environment-specific configs inherit from this.
+# Override in config.{dev,staging,prod}.yaml.
+# ──────────────────────────────────────────────
+
+llm:
+  provider: litellm
+  model: deepseek/deepseek-chat
+  temperature: 0.2
+  max_tokens: 1024
+  # Multi-provider (optional) — uncomment to enable LLMGateway
+  # providers:
+  #   - name: openai-primary
+  #     provider: openai
+  #     model: gpt-4o
+  #     api_key_env: OPENAI_API_KEY
+  #     weight: 3
+  #   - name: azure-fallback
+  #     provider: azure
+  #     model: gpt-4o
+  #     api_key_env: AZURE_OPENAI_API_KEY
+  #     api_base: https://your-resource.openai.azure.com
+  #     weight: 2
+  #   - name: deepseek-backup
+  #     provider: deepseek
+  #     model: deepseek-chat
+  #     api_key_env: DEEPSEEK_API_KEY
+  #     weight: 1
+  # load_balancing: weighted
+  # circuit_breaker_failures: 5
+  # circuit_breaker_recovery: 30.0
+  # connection_pool_size: 100
+  # connection_pool_per_host: 20
+
+memory:
+  working_max_tokens: 8000
+  vector_top_k: 5
+  embedding_provider: hash
+  # embedding_model: text-embedding-3-small
+  # embedding_dimension: 1536
+  # embedding_api_key_env: OPENAI_API_KEY
+  # milvus_uri: http://localhost:19530
+  # milvus_collection: athena_memory
+
+agent:
+  max_steps: 6
+
+logging:
+  level: INFO
+
+web:
+  host: 127.0.0.1
+  port: 8000
+  cors_origins:
+    - "*"
+  session_ttl_seconds: 3600

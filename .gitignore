@@ -10,3 +10,4 @@ htmlcov/
 .env
 dist/
 build/
+config/config.local.yaml

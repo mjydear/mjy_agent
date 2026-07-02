@@ -31,6 +31,14 @@ llm:
 memory:
   working_max_tokens: 8000
   vector_top_k: 5
+  # ── Embedding configuration ──
+  # embedding_provider: hash          # 'hash' (local, deterministic) or 'openai' (real semantic)
+  # embedding_model: text-embedding-3-small
+  # embedding_dimension: 1536
+  # embedding_api_key_env: OPENAI_API_KEY
+  # ── Milvus configuration ──
+  # milvus_uri: http://localhost:19530
+  # milvus_collection: athena_memory
 agent:
   max_steps: 6
 logging:

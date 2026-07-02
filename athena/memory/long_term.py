@@ -25,8 +25,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import math
+import os
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -79,6 +81,109 @@ class HashEmbeddingProvider:
             vector[index] += 1.0
         norm = math.sqrt(sum(value * value for value in vector)) or 1.0
         return [value / norm for value in vector]
+
+
+class OpenAIEmbeddingProvider:
+    """
+    基于 OpenAI text-embedding-3-small 的真实语义嵌入实现。
+
+    功能说明：
+        调用 OpenAI Embedding API，将文本转为 1536 维语义向量。
+        同一段话的不同表述（如"苹果很甜"和"水果味道好"）会产生相近的向量，
+        而 HashEmbeddingProvider 做不到这一点。
+
+    参数说明：
+        model:     嵌入模型名称，默认 text-embedding-3-small（性价比最高）
+        api_key_env: API Key 环境变量名，默认 OPENAI_API_KEY
+        api_base:   可选的自定义 API 地址（用于代理或 Azure）
+
+    设计思路：
+        异步调用 litellm.aembedding()，与 LLMGateway 共享 litellm 生态。
+        失败时自动重试一次（网络抖动容错），然后抛出明确的异常。
+
+    使用示例：
+        provider = OpenAIEmbeddingProvider()
+        embedding = await provider.embed("今天天气不错")
+        print(len(embedding))  # 1536
+    """
+
+    def __init__(
+        self,
+        model: str = "text-embedding-3-small",
+        api_key_env: str = "OPENAI_API_KEY",
+        api_base: str | None = None,
+    ) -> None:
+        self.model = model
+        self.api_key_env = api_key_env
+        self.api_base = api_base
+
+    async def embed(self, text: str) -> Sequence[float]:
+        """Return a semantic embedding vector for the given text.
+
+        Args:
+            text: Input text to embed.
+
+        Returns:
+            A list of floats representing the embedding vector.
+
+        Raises:
+            RuntimeError: If the API call fails or the API key is missing.
+        """
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("text must be a non-empty string")
+
+        api_key = os.getenv(self.api_key_env)
+        if not api_key:
+            raise RuntimeError(
+                f"Missing API key for embedding. Set {self.api_key_env}."
+            )
+
+        from litellm import aembedding
+
+        kwargs: dict[str, object] = {
+            "model": self.model,
+            "input": [text.strip()],
+        }
+        if self.api_base:
+            kwargs["api_base"] = self.api_base
+
+        last_error: Exception | None = None
+        for attempt in range(2):  # 1 retry
+            try:
+                response = await aembedding(**kwargs)  # type: ignore[arg-type]
+                # litellm returns a dict-like object with 'data' key
+                if isinstance(response, dict):
+                    data = response.get("data", [])
+                elif hasattr(response, "data"):
+                    data = response.data
+                else:
+                    data = []
+
+                if not data:
+                    raise RuntimeError("Embedding API returned no data")
+
+                first_item = data[0]
+                if isinstance(first_item, dict):
+                    embedding = first_item.get("embedding", [])
+                elif hasattr(first_item, "embedding"):
+                    embedding = first_item.embedding
+                else:
+                    embedding = []
+
+                if not embedding:
+                    raise RuntimeError("Embedding API returned empty embedding")
+                return list(embedding)
+
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                if attempt == 0:
+                    await asyncio.sleep(0.5)
+
+        raise RuntimeError(
+            f"Embedding API call failed for model '{self.model}': {last_error}"
+        ) from last_error
 
 
 @dataclass(frozen=True)

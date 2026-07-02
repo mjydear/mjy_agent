@@ -103,6 +103,34 @@ class MemorySettings(BaseModel):
     working_max_tokens: PositiveInt = 8000
     vector_top_k: PositiveInt = 5
 
+    # Embedding provider configuration
+    embedding_provider: str = Field(
+        default="hash",
+        description="Embedding provider: 'hash' (local, deterministic) or 'openai' (real semantic)",
+    )
+    embedding_model: str = Field(
+        default="text-embedding-3-small",
+        description="Embedding model name when using 'openai' provider",
+    )
+    embedding_dimension: int = Field(
+        default=1536,
+        description="Embedding vector dimension (1536 for text-embedding-3-small)",
+    )
+    embedding_api_key_env: str = Field(
+        default="OPENAI_API_KEY",
+        description="Environment variable for embedding API key",
+    )
+
+    # Milvus configuration
+    milvus_uri: str = Field(
+        default="http://localhost:19530",
+        description="Milvus server URI",
+    )
+    milvus_collection: str = Field(
+        default="athena_memory",
+        description="Milvus collection name",
+    )
+
 
 class AgentSettings(BaseModel):
     """Agent execution-loop settings."""

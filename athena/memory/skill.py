@@ -28,6 +28,7 @@ from athena.memory.long_term import (
     HashEmbeddingProvider,
     LongTermMemory,
     LongTermMemoryRecord,
+    OpenAIEmbeddingProvider,
 )
 
 

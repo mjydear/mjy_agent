@@ -25,6 +25,7 @@ class ErrorResponse(BaseModel):
 
     error_code: str
     message: str
+    trace_id: str = ""
 
 
 class SessionCreateRequest(BaseModel):
@@ -346,6 +347,40 @@ class CloudOpsResponse(BaseModel):
     steps: list[StepTrace]
     data: dict[str, object] = Field(default_factory=dict)
     requires_confirmation: bool = False
+
+
+class TaskSubmitRequest(BaseModel):
+    """
+    异步任务提交请求。
+
+    kind=chat 时需要 session_id + message；kind=workflow 时需要 task。
+    异步接口返回 task_id，客户端随后轮询 GET /api/tasks/{task_id} 获取结果。
+    """
+
+    kind: str = Field(default="chat")
+    session_id: str | None = None
+    message: str | None = None
+    task: str | None = None
+    workflow_type: str = "plan_execute"
+
+
+class TaskSubmitResponse(BaseModel):
+    """异步任务提交响应：只返回任务标识与初始状态。"""
+
+    task_id: str
+    status: str
+
+
+class TaskStatusResponse(BaseModel):
+    """异步任务轮询响应：状态 + 结果 + 错误。"""
+
+    task_id: str
+    kind: str
+    status: str
+    result: dict[str, object] | None = None
+    error: str | None = None
+    created_at: float
+    updated_at: float
 
 
 """

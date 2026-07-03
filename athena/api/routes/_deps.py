@@ -33,6 +33,20 @@ def get_service(request: Request) -> AthenaWebService:
     )  # 💡 学习提示：cast 只帮助类型检查器理解类型，运行时不会转换对象。
 
 
+def get_task_manager(request: Request) -> "AsyncTaskManager":
+    """从 app.state 取出共享的异步任务管理器。"""
+    from athena.api.task_manager import AsyncTaskManager
+
+    return cast(AsyncTaskManager, request.app.state.task_manager)
+
+
+def get_idempotency(request: Request) -> "IdempotencyManager":
+    """从 app.state 取出共享的幂等管理器。"""
+    from athena.api.idempotency import IdempotencyManager
+
+    return cast(IdempotencyManager, request.app.state.idempotency)
+
+
 """
 🤔 思考题：
 

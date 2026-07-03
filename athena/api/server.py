@@ -10,8 +10,6 @@
 from __future__ import annotations
 
 import logging
-import time
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -25,11 +23,17 @@ from athena.api.routes import (
     cloud_ops,
     metrics,
     session,
+    tasks,
     traces,
     workflow,
 )
+from athena.api.middleware import install_trace_middleware
+from athena.api.response import get_trace_id
 from athena.api.schemas import ErrorResponse
 from athena.api.services import ApiServiceError, AthenaWebService, static_directory
+from athena.api.task_manager import AsyncTaskManager
+from athena.api.idempotency import IdempotencyManager
+from athena.infra.cache import create_cache
 from athena.cli.main import build_agent
 from athena.config import AthenaSettings, load_settings
 from athena.exceptions import AthenaError
@@ -61,13 +65,28 @@ def create_app(
     )  # 💡 学习提示：这里延迟读取配置，方便测试传入自定义 settings。
     configure_logging(resolved_settings.logging.level)
     app = FastAPI(title="Athena Agent Web Console", version="0.1.0")
+    app.state.settings = resolved_settings  # 供鉴权/限流等依赖读取
     app.state.service = service or AthenaWebService(
         agent_factory=lambda: build_agent(
             None
         ),  # 💡 学习提示：用 lambda 延迟创建 Agent，避免服务启动时就要求 API Key 可用。
         session_ttl_seconds=resolved_settings.web.session_ttl_seconds,
     )
+    # 企业级基础设施：缓存（Redis 可降级）、异步任务管理器、幂等管理器
+    app.state.cache = create_cache(
+        resolved_settings.cache.redis_url, namespace=resolved_settings.cache.namespace
+    )
+    app.state.task_manager = AsyncTaskManager(
+        max_concurrency=resolved_settings.task.max_concurrency,
+        result_ttl_seconds=resolved_settings.task.result_ttl_seconds,
+        thread_pool_workers=resolved_settings.task.thread_pool_workers,
+    )
+    app.state.idempotency = IdempotencyManager(
+        app.state.cache,
+        ttl_seconds=resolved_settings.cache.idempotency_ttl_seconds,
+    )
     _configure_middlewares(app, resolved_settings)
+    install_trace_middleware(app)  # 链路 ID + 结构化访问日志（最外层，最先执行）
     _configure_exception_handlers(app)
     _mount_routes(app)
     _mount_static(app, static_directory())
@@ -93,36 +112,7 @@ def _configure_middlewares(app: FastAPI, settings: AthenaSettings) -> None:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    @app.middleware("http")
-    async def log_requests(
-        request: Request, call_next: Callable[[Request], Awaitable[object]]
-    ) -> object:
-        """
-        记录每个请求的基础访问日志。
-
-        功能说明：统计请求处理耗时并写入日志。
-        参数说明：
-            request：当前 HTTP 请求对象。
-            call_next：FastAPI 提供的“继续交给下一个处理环节”的函数。
-        返回值：下游路由生成的响应对象。
-        设计思路：使用中间件统一记录日志，避免每个路由都重复写计时代码。
-        使用示例：浏览器请求 /api/metrics 时，这个函数会自动被 FastAPI 调用。
-        """
-        started_at = (
-            time.perf_counter()
-        )  # 💡 学习提示：perf_counter 适合测耗时，比 time.time 更稳定。
-        response = await call_next(
-            request
-        )  # 💡 学习提示：这里必须 await，否则请求不会真正进入后面的路由。
-        duration_ms = (time.perf_counter() - started_at) * 1000
-        logger.info(
-            "api request method=%s path=%s duration_ms=%.2f",
-            request.method,
-            request.url.path,
-            duration_ms,
-        )
-        return response
+    # 注：链路 ID 与访问日志由 install_trace_middleware 统一处理，避免重复记录。
 
 
 def _configure_exception_handlers(app: FastAPI) -> None:
@@ -143,17 +133,18 @@ def _configure_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(ApiServiceError)
     async def handle_api_error(request: Request, exc: ApiServiceError) -> JSONResponse:
-        """把服务层可预期错误转换成 400 响应。"""
+        """把服务层可预期错误转换成语义化 HTTP 响应（默认 400，可为 401/409 等）。"""
         logger.warning(
-            "api service error path=%s code=%s message=%s",
+            "api service error path=%s code=%s message=%s trace_id=%s",
             request.url.path,
             exc.error_code,
             exc.message,
+            get_trace_id(),
         )
         return JSONResponse(
-            status_code=400,
+            status_code=exc.status_code,
             content=ErrorResponse(
-                error_code=exc.error_code, message=exc.message
+                error_code=exc.error_code, message=exc.message, trace_id=get_trace_id()
             ).model_dump(),
         )
 
@@ -161,26 +152,29 @@ def _configure_exception_handlers(app: FastAPI) -> None:
     async def handle_athena_error(request: Request, exc: AthenaError) -> JSONResponse:
         """把 Athena 核心异常转换成标准 JSON 响应。"""
         logger.warning(
-            "athena error path=%s code=%s message=%s",
+            "athena error path=%s code=%s message=%s trace_id=%s",
             request.url.path,
             exc.code,
             exc.message,
+            get_trace_id(),
         )
         return JSONResponse(
             status_code=500,
             content=ErrorResponse(
-                error_code=str(exc.code), message=exc.message
+                error_code=str(exc.code), message=exc.message, trace_id=get_trace_id()
             ).model_dump(),
         )
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
         """兜底处理未知异常，避免内部堆栈泄露到浏览器。"""
-        logger.exception("unexpected api error path=%s", request.url.path)
+        logger.exception("unexpected api error path=%s trace_id=%s", request.url.path, get_trace_id())
         return JSONResponse(
             status_code=500,
             content=ErrorResponse(
-                error_code="INTERNAL_ERROR", message="Internal server error"
+                error_code="INTERNAL_ERROR",
+                message="Internal server error",
+                trace_id=get_trace_id(),
             ).model_dump(),
         )
 
@@ -197,6 +191,7 @@ def _mount_routes(app: FastAPI) -> None:
     """
     app.include_router(session.router)
     app.include_router(chat.router)
+    app.include_router(tasks.router)
     app.include_router(workflow.router)
     app.include_router(cloud_ops.router)
     app.include_router(traces.router)

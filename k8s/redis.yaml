@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: athena-redis
+  namespace: athena
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: athena-redis
+  template:
+    metadata:
+      labels:
+        app: athena-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args: ["--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+          ports:
+            - containerPort: 6379
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "320Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: athena-redis
+  namespace: athena
+spec:
+  selector:
+    app: athena-redis
+  ports:
+    - port: 6379
+      targetPort: 6379

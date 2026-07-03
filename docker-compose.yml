@@ -1,0 +1,35 @@
+# 一键本地部署：Athena 应用 + Redis 缓存。
+# 用法：docker compose up --build
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  athena:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      ATHENA_WEB_HOST: 0.0.0.0
+      ATHENA_WEB_PORT: "8000"
+      ATHENA_REDIS_URL: redis://redis:6379/0
+      # 上线时通过 .env 注入真实密钥，切勿写死在仓库里
+      # ATHENA_API_KEYS: "prod-key:tenant-a"
+      # OPENAI_API_KEY / DEEPSEEK_API_KEY: ...
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/metrics',timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

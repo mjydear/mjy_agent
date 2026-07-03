@@ -77,6 +77,49 @@ class WebSettings(BaseModel):
     session_ttl_seconds: PositiveInt = 3600
 
 
+class SecuritySettings(BaseModel):
+    """接口安全设置：API Key 鉴权与多租户映射。"""
+
+    # api_keys 为空表示鉴权关闭（本地演示友好）；配置后所有写接口需带合法 Key。
+    # 格式：{"<api-key>": "<tenant_id>"}
+    api_keys: dict[str, str] = Field(default_factory=dict)
+    require_auth: bool = False
+    default_tenant: str = "public"
+
+
+class CacheSettings(BaseModel):
+    """缓存设置：Redis URL 为空或连不上时自动降级为内存缓存。"""
+
+    redis_url: str | None = None
+    namespace: str = "athena"
+    vector_ttl_seconds: PositiveInt = 300
+    idempotency_ttl_seconds: PositiveInt = 86400
+
+
+class TaskSettings(BaseModel):
+    """异步任务设置：控制后台任务并发与保留时长。"""
+
+    max_concurrency: PositiveInt = 8
+    result_ttl_seconds: PositiveInt = 3600
+    thread_pool_workers: PositiveInt = 8
+
+
+class RateLimitSettings(BaseModel):
+    """限流设置：全局与单用户每分钟请求上限。"""
+
+    enabled: bool = True
+    global_per_minute: PositiveInt = 600
+    per_tenant_per_minute: PositiveInt = 120
+
+
+class SandboxSettings(BaseModel):
+    """沙箱资源限制：CPU 时间、内存、超时。"""
+
+    cpu_time_seconds: PositiveInt = 5
+    memory_mb: PositiveInt = 256
+    timeout_seconds: float = 5.0
+
+
 class AthenaSettings(BaseModel):
     """Top-level Athena settings."""
 
@@ -87,6 +130,11 @@ class AthenaSettings(BaseModel):
     web: WebSettings = Field(
         default_factory=WebSettings
     )  # 💡 学习提示：新增配置段用 default_factory，可保证旧 config.yaml 没有 web 段时仍能启动。
+    security: SecuritySettings = Field(default_factory=SecuritySettings)
+    cache: CacheSettings = Field(default_factory=CacheSettings)
+    task: TaskSettings = Field(default_factory=TaskSettings)
+    rate_limit: RateLimitSettings = Field(default_factory=RateLimitSettings)
+    sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
 
 
 def load_settings(path: Path | None = None) -> AthenaSettings:
@@ -154,6 +202,22 @@ def _apply_env_overrides(settings: AthenaSettings) -> AthenaSettings:
         ]  # 💡 学习提示：逗号分隔让一个环境变量能配置多个前端来源。
     if web_session_ttl:
         updated.web.session_ttl_seconds = int(web_session_ttl)
+    # 生产部署常用环境变量注入敏感/环境相关配置
+    redis_url = os.getenv("ATHENA_REDIS_URL")
+    if redis_url:
+        updated.cache.redis_url = redis_url
+    api_keys = os.getenv("ATHENA_API_KEYS")
+    if api_keys:
+        # 格式：key1:tenantA,key2:tenantB
+        parsed: dict[str, str] = {}
+        for item in api_keys.split(","):
+            if ":" in item:
+                key, tenant = item.split(":", 1)
+                if key.strip():
+                    parsed[key.strip()] = tenant.strip() or "public"
+        if parsed:
+            updated.security.api_keys = parsed
+            updated.security.require_auth = True
     return updated
 
 

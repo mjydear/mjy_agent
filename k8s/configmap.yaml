@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: athena
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: athena-config
+  namespace: athena
+data:
+  ATHENA_WEB_HOST: "0.0.0.0"
+  ATHENA_WEB_PORT: "8000"
+  ATHENA_REDIS_URL: "redis://athena-redis:6379/0"
+  ATHENA_LOG_LEVEL: "INFO"

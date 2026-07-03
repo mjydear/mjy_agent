@@ -16,3 +16,26 @@ web:
   cors_origins:
     - "*"
   session_ttl_seconds: 3600
+security:
+  # api_keys 为空 = 鉴权关闭（本地演示）；上线时通过环境变量 ATHENA_API_KEYS=key:tenant 注入
+  api_keys: {}
+  require_auth: false
+  default_tenant: public
+cache:
+  # redis_url 为空或连接失败会自动降级为内存缓存；生产用 ATHENA_REDIS_URL 注入
+  redis_url: redis://127.0.0.1:6379/0
+  namespace: athena
+  vector_ttl_seconds: 300
+  idempotency_ttl_seconds: 86400
+task:
+  max_concurrency: 8
+  result_ttl_seconds: 3600
+  thread_pool_workers: 8
+rate_limit:
+  enabled: true
+  global_per_minute: 600
+  per_tenant_per_minute: 120
+sandbox:
+  cpu_time_seconds: 5
+  memory_mb: 256
+  timeout_seconds: 5.0

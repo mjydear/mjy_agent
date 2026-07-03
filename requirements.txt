@@ -19,3 +19,10 @@ prometheus-api-client>=0.5.5
 aliyun-python-sdk-core>=2.15.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
+# 企业级改造新增依赖
+redis>=5.0.0
+psutil>=5.9.0
+tenacity>=8.2.0
+pybreaker>=1.2.0
+slowapi>=0.1.9
+prometheus-client>=0.20.0

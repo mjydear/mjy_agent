@@ -70,11 +70,12 @@ class ApiServiceError(Exception):
     🎯 面试考点：为什么不用普通 ValueError？答案：ValueError 没有稳定业务错误码，前端难以区分错误类型。
     """
 
-    def __init__(self, error_code: str, message: str) -> None:
+    def __init__(self, error_code: str, message: str, status_code: int = 400) -> None:
         """保存错误码和错误信息，供异常处理器读取。"""
         super().__init__(message)
         self.error_code = error_code
         self.message = message
+        self.status_code = status_code  # 支持 401/403/409 等语义化 HTTP 状态
 
 
 @dataclass

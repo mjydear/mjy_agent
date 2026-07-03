@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import shlex
 import time
 import urllib.request
@@ -45,8 +46,10 @@ class SandboxPolicy:
         allowed_shell_commands: 允许执行的命令名集合，不在集合里的命令直接拒绝
         blocked_shell_fragments: 危险片段黑名单，用于拦截组合命令中的破坏性操作
         allowed_hosts: 允许访问的网络主机，默认为空表示禁止网络访问
-        timeout_seconds: 单次外部操作最大耗时
+        timeout_seconds: 单次外部操作最大耗时（挂钟）
         max_output_chars: 最大输出长度，防止工具刷爆上下文或内存
+        cpu_time_seconds: 子进程 CPU 时间上限（POSIX 通过 setrlimit 硬限制）
+        memory_mb: 子进程内存上限（POSIX 用 setrlimit；Windows 用 psutil 监控并杀进程）
     """
 
     allowed_shell_commands: frozenset[str] = frozenset(
@@ -63,12 +66,27 @@ class SandboxPolicy:
     allowed_hosts: frozenset[str] = frozenset()
     timeout_seconds: float = 5.0
     max_output_chars: int = 20_000
+    cpu_time_seconds: int = 5
+    memory_mb: int = 256
 
     def __post_init__(self) -> None:
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
         if self.max_output_chars <= 0:
             raise ValueError("max_output_chars must be positive")
+        if self.cpu_time_seconds <= 0:
+            raise ValueError("cpu_time_seconds must be positive")
+        if self.memory_mb <= 0:
+            raise ValueError("memory_mb must be positive")
+
+    @classmethod
+    def from_settings(cls, sandbox_settings: Any) -> "SandboxPolicy":
+        """从 config.SandboxSettings 构造策略，其它安全项保持默认。"""
+        return cls(
+            timeout_seconds=float(sandbox_settings.timeout_seconds),
+            cpu_time_seconds=int(sandbox_settings.cpu_time_seconds),
+            memory_mb=int(sandbox_settings.memory_mb),
+        )
 
 
 @dataclass(frozen=True)
@@ -155,16 +173,29 @@ class SecuritySandbox:
         command = self._require_text(command, "command")
         self._validate_shell_command(command)
         started_at = time.time()
+        limit_flag = {"memory_exceeded": False}
         try:
             process = await asyncio.create_subprocess_shell(
                 command,
                 cwd=str(cwd) if cwd else None,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                preexec_fn=self._posix_resource_limiter(),  # POSIX: CPU/内存硬限制
             )
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=self.policy.timeout_seconds
-            )
+            # Windows 无 setrlimit：用 psutil 监控内存，超限即杀进程树
+            monitor = asyncio.create_task(self._monitor_memory(process, limit_flag))
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=self.policy.timeout_seconds
+                )
+            finally:
+                monitor.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await monitor
+            if limit_flag["memory_exceeded"]:
+                return self._result(
+                    "shell", command, started_at, False, "", "memory limit exceeded"
+                )
             output = (stdout + stderr).decode("utf-8", errors="replace")[
                 : self.policy.max_output_chars
             ]
@@ -224,6 +255,53 @@ class SecuritySandbox:
         exec(byte_code, namespace, namespace)
         printer = namespace.get("_print")
         return printer() if callable(printer) else ""
+
+    def _posix_resource_limiter(self) -> Any:
+        """POSIX 下返回 preexec_fn，用 setrlimit 硬限制子进程 CPU 与地址空间；Windows 返回 None。"""
+        if os.name == "nt":
+            return None
+        cpu = self.policy.cpu_time_seconds
+        mem_bytes = self.policy.memory_mb * 1024 * 1024
+
+        def _apply() -> None:
+            import resource  # POSIX-only
+
+            resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
+            resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
+
+        return _apply
+
+    async def _monitor_memory(
+        self, process: Any, flag: dict[str, bool]
+    ) -> None:
+        """轮询子进程（含子孙）RSS，超过 memory_mb 即杀进程树并置位 flag。"""
+        try:
+            import psutil
+        except ImportError:
+            return
+        limit_bytes = self.policy.memory_mb * 1024 * 1024
+        try:
+            proc = psutil.Process(process.pid)
+        except psutil.Error:
+            return
+        while True:
+            await asyncio.sleep(0.05)
+            try:
+                rss = proc.memory_info().rss
+                children = proc.children(recursive=True)
+                for child in children:
+                    with contextlib.suppress(psutil.Error):
+                        rss += child.memory_info().rss
+            except psutil.Error:
+                return
+            if rss > limit_bytes:
+                flag["memory_exceeded"] = True
+                for child in children:
+                    with contextlib.suppress(psutil.Error):
+                        child.kill()
+                with contextlib.suppress(psutil.Error):
+                    proc.kill()
+                return
 
     def _validate_shell_command(self, command: str) -> None:
         lowered = command.lower()

@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: athena-api
+  namespace: athena
+  labels:
+    app: athena-api
+spec:
+  replicas: 2  # 多副本，配合 HPA 弹性扩容
+  selector:
+    matchLabels:
+      app: athena-api
+  strategy:
+    type: RollingUpdate  # 滚动更新，发布不中断
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: athena-api
+    spec:
+      containers:
+        - name: athena
+          image: athena-agent:latest  # 替换为你的镜像仓库地址
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: athena-config
+            - secretRef:
+                name: athena-secrets
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          # 存活探针：进程假死时重启
+          livenessProbe:
+            httpGet:
+              path: /api/metrics
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # 就绪探针：未就绪的 Pod 不接流量
+          readinessProbe:
+            httpGet:
+              path: /api/metrics
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: athena-api
+  namespace: athena
+spec:
+  selector:
+    app: athena-api
+  ports:
+    - port: 80
+      targetPort: 8000
+  type: ClusterIP

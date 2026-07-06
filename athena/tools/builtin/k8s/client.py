@@ -9,10 +9,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import cast
 
 from athena.types import JSONValue
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -21,7 +24,8 @@ class K8sClient:
     Kubernetes 只读客户端门面。
 
     功能说明：提供 Pod、节点、事件和资源用量的读取接口。
-    参数说明：namespace 是命名空间；use_mock 表示当前使用演示数据。
+    参数说明：namespace 是命名空间；use_mock=True 用演示数据，False 时走真实 SDK，
+        SDK 缺失或连接失败自动降级 Mock。
     返回值：各 list/resource 方法返回 JSON 友好的 dict/list。
     设计思路：门面模式隔离真实 Kubernetes SDK，业务层不关心底层是 Mock 还是真集群。
     使用示例：K8sClient(namespace="default").list_pods()
@@ -30,16 +34,76 @@ class K8sClient:
     namespace: str = "default"
     use_mock: bool = True
 
+    # ------------------------------------------------------------------
+    # 真实 SDK 接入：kubernetes 官方客户端（缺失/失败时抛错，由公开方法降级）
+    # ------------------------------------------------------------------
+    def _core_api(self) -> object:
+        """惰性加载 kubernetes 客户端，优先集群内配置，其次本地 kubeconfig。"""
+        from kubernetes import client, config  # 延迟导入，未装不影响演示
+
+        try:
+            config.load_incluster_config()
+        except Exception:
+            config.load_kube_config()
+        return client.CoreV1Api()
+
+    def _real_list_pods(self) -> list[dict[str, JSONValue]]:
+        api = cast("object", self._core_api())
+        pods = api.list_namespaced_pod(self.namespace).items  # type: ignore[attr-defined]
+        result: list[dict[str, JSONValue]] = []
+        for pod in pods:
+            statuses = pod.status.container_statuses or []
+            restarts = sum(cs.restart_count for cs in statuses)
+            result.append(
+                {
+                    "name": pod.metadata.name,
+                    "namespace": pod.metadata.namespace,
+                    "status": pod.status.phase or "Unknown",
+                    "restarts": restarts,
+                    "cpu_m": 0,
+                    "memory_mi": 0,
+                }
+            )
+        return result
+
+    def _real_list_events(
+        self, pod_name: str | None = None
+    ) -> list[dict[str, JSONValue]]:
+        api = cast("object", self._core_api())
+        events = api.list_namespaced_event(self.namespace).items  # type: ignore[attr-defined]
+        result: list[dict[str, JSONValue]] = []
+        for ev in events:
+            name = ev.involved_object.name if ev.involved_object else None
+            if pod_name is not None and name != pod_name:
+                continue
+            result.append(
+                {
+                    "pod": name or "",
+                    "type": ev.type or "Normal",
+                    "reason": ev.reason or "",
+                    "message": ev.message or "",
+                }
+            )
+        return result
+
     def list_pods(self) -> list[dict[str, JSONValue]]:
         """
         获取 Pod 状态快照。
 
-        功能说明：返回 Running、CrashLoopBackOff、ImagePullBackOff 三类典型 Pod。
+        功能说明：真实模式查询集群 Pod，演示/失败降级返回典型故障 Pod。
         参数说明：无，读取构造函数中的 namespace。
         返回值：Pod 字典列表。
         设计思路：Mock 数据覆盖常见故障，方便 K8sDiagnoser 演示 SOP 判断。
         使用示例：pods = client.list_pods()
         """
+        if not self.use_mock:
+            try:
+                return self._real_list_pods()
+            except Exception as exc:
+                logger.warning("k8s list_pods falling back to mock: %s", exc)
+        return self._mock_list_pods()
+
+    def _mock_list_pods(self) -> list[dict[str, JSONValue]]:
         return [
             {
                 "name": "api-7d9c",
@@ -96,12 +160,17 @@ class K8sClient:
         """
         查询 Kubernetes 事件。
 
-        功能说明：返回 Pod 相关事件，可按 pod_name 过滤。
+        功能说明：真实模式查询集群事件，演示/失败降级返回典型事件，可按 pod_name 过滤。
         参数说明：pod_name 为空时返回全部事件；不为空时只返回指定 Pod 事件。
         返回值：事件字典列表。
         设计思路：事件往往比状态更接近原因，例如 ImagePullBackOff 的具体拉取失败信息。
         使用示例：client.list_events("checkout-5f8b")
         """
+        if not self.use_mock:
+            try:
+                return self._real_list_events(pod_name)
+            except Exception as exc:
+                logger.warning("k8s list_events falling back to mock: %s", exc)
         events: list[dict[str, JSONValue]] = [
             {
                 "pod": "checkout-5f8b",

@@ -22,6 +22,15 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=False)
 from athena.exceptions import ConfigError, ErrorCode
 
 
+class RoutingSettings(BaseModel):
+    """多模型复杂度路由：简单查询走轻量模型，复杂查询走强模型。"""
+
+    enabled: bool = False  # 默认关闭；开启需同时配置 light/heavy 模型凭证
+    light_model: str = "gpt-4o-mini"
+    heavy_model: str = "gpt-4o"
+    threshold: float = 0.5
+
+
 class LLMSettings(BaseModel):
     """LLM gateway settings."""
 
@@ -29,6 +38,25 @@ class LLMSettings(BaseModel):
     model: str = "gpt-4o-mini"
     temperature: float = 0.2
     max_tokens: PositiveInt = 1024
+    routing: RoutingSettings = Field(default_factory=RoutingSettings)
+
+
+class EmbeddingSettings(BaseModel):
+    """嵌入模型设置：启用真实向量模型，缺凭证时自动降级哈希嵌入。"""
+
+    enabled: bool = False  # 默认关闭，无 API Key 时用哈希嵌入
+    model: str = "text-embedding-3-small"
+    dimension: PositiveInt = 1536  # 需与所选模型输出维度一致（哈希降级同维）
+
+
+class VectorStoreSettings(BaseModel):
+    """向量库设置：backend=milvus 连不上时自动降级内存。"""
+
+    backend: str = "memory"  # memory | milvus
+    uri: str = "http://localhost:19530"
+    collection_name: str = "athena_memory"
+    dimension: PositiveInt = 1536
+    metric_type: str = "COSINE"
 
 
 class MemorySettings(BaseModel):
@@ -36,7 +64,6 @@ class MemorySettings(BaseModel):
 
     working_max_tokens: PositiveInt = 8000
     vector_top_k: PositiveInt = 5
-
 
 class AgentSettings(BaseModel):
     """Agent execution-loop settings."""
@@ -78,13 +105,22 @@ class WebSettings(BaseModel):
 
 
 class SecuritySettings(BaseModel):
-    """接口安全设置：API Key 鉴权与多租户映射。"""
+    """接口安全设置：API Key 鉴权、RBAC 授权与多租户映射。"""
 
     # api_keys 为空表示鉴权关闭（本地演示友好）；配置后所有写接口需带合法 Key。
     # 格式：{"<api-key>": "<tenant_id>"}
     api_keys: dict[str, str] = Field(default_factory=dict)
     require_auth: bool = False
     default_tenant: str = "public"
+    # RBAC：租户 → 授予的 scope 列表；["*"] 表示全部权限。
+    # 未配置的租户默认拥有全部权限，保证向后兼容与本地演示友好。
+    roles: dict[str, list[str]] = Field(default_factory=dict)
+    # JWT/OIDC（可选）：配置 jwt_secret 后支持 Authorization: Bearer <token>。
+    # 缺失时仅走 API Key，PyJWT 未安装时自动禁用 Bearer 校验（自动降级）。
+    jwt_secret: str | None = None
+    jwt_algorithm: str = "HS256"
+    jwt_issuer: str | None = None
+    jwt_audience: str | None = None
 
 
 class CacheSettings(BaseModel):
@@ -120,11 +156,22 @@ class SandboxSettings(BaseModel):
     timeout_seconds: float = 5.0
 
 
+class ObservabilitySettings(BaseModel):
+    """可观测性设置：OpenTelemetry 链路追踪与 Prometheus 指标。"""
+
+    tracing_enabled: bool = False  # 默认关闭，避免本地演示刷屏 Console span
+    otlp_endpoint: str | None = None  # 为空则用 Console 导出器
+    service_name: str = "athena-agent"
+    metrics_enabled: bool = True
+
+
 class AthenaSettings(BaseModel):
     """Top-level Athena settings."""
 
     llm: LLMSettings = Field(default_factory=LLMSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
+    embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
+    vector_store: VectorStoreSettings = Field(default_factory=VectorStoreSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     web: WebSettings = Field(
@@ -135,6 +182,9 @@ class AthenaSettings(BaseModel):
     task: TaskSettings = Field(default_factory=TaskSettings)
     rate_limit: RateLimitSettings = Field(default_factory=RateLimitSettings)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
+    observability: ObservabilitySettings = Field(
+        default_factory=ObservabilitySettings
+    )
 
 
 def load_settings(path: Path | None = None) -> AthenaSettings:

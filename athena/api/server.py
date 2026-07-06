@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -18,28 +20,106 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from athena.api.routes import (
+    alerts,
+    audit,
     benchmark,
     chat,
     cloud_ops,
+    health,
+    knowledge,
     metrics,
+    prometheus,
     session,
     tasks,
     traces,
     workflow,
 )
-from athena.api.middleware import install_trace_middleware
+from athena.api.middleware import (
+    install_metrics_middleware,
+    install_rate_limit_middleware,
+    install_trace_middleware,
+)
 from athena.api.response import get_trace_id
 from athena.api.schemas import ErrorResponse
 from athena.api.services import ApiServiceError, AthenaWebService, static_directory
 from athena.api.task_manager import AsyncTaskManager
 from athena.api.idempotency import IdempotencyManager
+from athena.api.session_store import SessionStore
+from athena.api.task_store import BenchmarkStore, MetricsStore, TaskStore
+from athena.tools.audit_chain import HashChainAuditStore
 from athena.infra.cache import create_cache
+from athena.infra.embeddings import create_embedding_provider
+from athena.infra.resilience import RateLimiter
+from athena.infra.vector_db import InMemoryVectorStore, create_vector_store
+from athena.memory.knowledge_base import KnowledgeBaseManager
+from athena.memory.ops_knowledge import OpsKnowledgeBase
+from athena.observability.incident import IncidentManager
+from athena.observability.prometheus import PrometheusMetrics
+from athena.observability.otel import setup_tracing
 from athena.cli.main import build_agent
 from athena.config import AthenaSettings, load_settings
 from athena.exceptions import AthenaError
 from athena.logging import configure_logging
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> "AsyncIterator[None]":
+    """
+    应用生命周期：负责优雅关闭（graceful shutdown）。
+
+    功能说明：收到停机信号时，先把 draining 置位让 /readyz 返回 503 停止导流，
+    再排空异步任务、关闭缓存连接，最后释放资源。
+    设计思路：滚动更新/缩容时先摘流量再退出，避免请求被硬切断。
+    """
+    yield  # 启动阶段：state 已由 create_app 装配完成，无需额外动作
+    # 关闭阶段：优雅下线
+    app.state.draining = True
+    logger.info("graceful shutdown: draining traffic, closing resources")
+    task_manager = getattr(app.state, "task_manager", None)
+    if task_manager is not None:
+        shutdown = getattr(task_manager, "shutdown", None)
+        if callable(shutdown):
+            try:
+                result = shutdown()
+                if hasattr(result, "__await__"):
+                    await result  # 排空进行中的异步任务
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("task manager shutdown error: %s", exc)
+    cache = getattr(app.state, "cache", None)
+    if cache is not None:
+        try:
+            cache.close()  # 关闭 Redis 连接池
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cache close error: %s", exc)
+
+
+def _build_workflow_llm(settings: AthenaSettings) -> object | None:
+    """
+    为工作流规划/执行构建 LLM 客户端，缺凭证时返回 None 触发降级。
+
+    功能说明：复用 LLMClientFactory + ResilientLLMClient 构造韧性 LLM。
+    参数说明：settings 提供 provider/model 等 LLM 配置。
+    返回值：LLMClient 或 None（无 API Key/构造失败时）。
+    设计思路：企业级“真实实现 + 自动降级”——有凭证走真实 LLM，否则规则/占位兜底。
+    """
+    try:
+        from athena.infra.llm import LLMClientFactory
+        from athena.infra.resilience import ResilientLLMClient, RetryPolicy, make_breaker
+
+        client = LLMClientFactory.create(
+            provider=settings.llm.provider,
+            model=settings.llm.model,
+            temperature=settings.llm.temperature,
+            max_tokens=settings.llm.max_tokens,
+        )
+        return ResilientLLMClient(
+            client, retry_policy=RetryPolicy(), breaker=make_breaker("workflow-llm")
+        )
+    except Exception as exc:
+        logger.info("Workflow LLM unavailable, using rule/placeholder fallback: %s", exc)
+        return None
 
 
 def create_app(
@@ -64,18 +144,43 @@ def create_app(
         settings or load_settings()
     )  # 💡 学习提示：这里延迟读取配置，方便测试传入自定义 settings。
     configure_logging(resolved_settings.logging.level)
-    app = FastAPI(title="Athena Agent Web Console", version="0.1.0")
+    app = FastAPI(
+        title="Athena Agent Web Console", version="0.1.0", lifespan=_lifespan
+    )
     app.state.settings = resolved_settings  # 供鉴权/限流等依赖读取
+    app.state.draining = False  # 优雅关闭标志：置位后 /readyz 返回 503 停止导流
+    # 企业级基础设施：缓存（Redis 可降级）先建好，供会话持久化等复用
+    app.state.cache = create_cache(
+        resolved_settings.cache.redis_url, namespace=resolved_settings.cache.namespace
+    )
     app.state.service = service or AthenaWebService(
         agent_factory=lambda: build_agent(
             None
         ),  # 💡 学习提示：用 lambda 延迟创建 Agent，避免服务启动时就要求 API Key 可用。
         session_ttl_seconds=resolved_settings.web.session_ttl_seconds,
+        session_store=SessionStore(
+            app.state.cache,
+            ttl_seconds=resolved_settings.web.session_ttl_seconds,
+        ),  # 会话落 Redis：重启不丢、多副本共享
+        ops_knowledge=OpsKnowledgeBase(
+            cache=app.state.cache,
+            vector_store=create_vector_store(resolved_settings),
+            embedding_provider=create_embedding_provider(resolved_settings),
+        ),  # 运维知识库：持久化 + 语义召回（向量/嵌入缺失自动降级）
+        workflow_llm=_build_workflow_llm(
+            resolved_settings
+        ),  # 工作流 LLM：有凭证走真实规划/执行，缺失则降级规则/占位
+        embedding_provider=create_embedding_provider(
+            resolved_settings
+        ),  # 评测嵌入：Benchmark 语义评分（嵌入缺失自动降级关键词）
+        task_store=TaskStore(
+            app.state.cache, ttl_seconds=resolved_settings.web.session_ttl_seconds
+        ),  # 任务落 Redis：重启不丢、多副本共享
+        metrics_store=MetricsStore(app.state.cache),  # 运行指标落 Redis：多副本聚合
+        benchmark_store=BenchmarkStore(app.state.cache),  # 评测报告落 Redis
+        audit_store=HashChainAuditStore(app.state.cache),  # 审计哈希链落 Redis：防篡改
     )
-    # 企业级基础设施：缓存（Redis 可降级）、异步任务管理器、幂等管理器
-    app.state.cache = create_cache(
-        resolved_settings.cache.redis_url, namespace=resolved_settings.cache.namespace
-    )
+    # 异步任务管理器、幂等管理器
     app.state.task_manager = AsyncTaskManager(
         max_concurrency=resolved_settings.task.max_concurrency,
         result_ttl_seconds=resolved_settings.task.result_ttl_seconds,
@@ -85,11 +190,46 @@ def create_app(
         app.state.cache,
         ttl_seconds=resolved_settings.cache.idempotency_ttl_seconds,
     )
+    app.state.rate_limiter = RateLimiter(
+        app.state.cache,
+        global_per_minute=resolved_settings.rate_limit.global_per_minute,
+        per_tenant_per_minute=resolved_settings.rate_limit.per_tenant_per_minute,
+    )
+    app.state.incident_manager = IncidentManager()
+    # 知识库管理后台：向量库按配置选 Milvus/内存 + 嵌入模型（缺凭证降级哈希）
+    app.state.knowledge_base = KnowledgeBaseManager(
+        create_vector_store(resolved_settings),
+        embedding_provider=create_embedding_provider(resolved_settings),
+    )
+    # 可观测性：Prometheus 指标 + 故障事件联动（L3+ 计入指标并告警）
+    app.state.prometheus = PrometheusMetrics()
+
+    def _alert_sink(inc: object) -> None:
+        app.state.prometheus.observe_incident(inc.severity.name)
+        logger.error(
+            "ALERT severity=%s strategy=%s code=%s message=%s",
+            inc.severity.name,
+            inc.strategy,
+            inc.error_code,
+            inc.message,
+        )
+
+    app.state.incident_manager._alert_sink = _alert_sink  # L3+ 触发上报
     _configure_middlewares(app, resolved_settings)
+    if resolved_settings.observability.metrics_enabled:
+        install_metrics_middleware(app, app.state.prometheus)
+    if resolved_settings.rate_limit.enabled:
+        install_rate_limit_middleware(app, app.state.rate_limiter)
     install_trace_middleware(app)  # 链路 ID + 结构化访问日志（最外层，最先执行）
     _configure_exception_handlers(app)
     _mount_routes(app)
     _mount_static(app, static_directory())
+    if resolved_settings.observability.tracing_enabled:
+        setup_tracing(
+            app,
+            service_name=resolved_settings.observability.service_name,
+            otlp_endpoint=resolved_settings.observability.otlp_endpoint,
+        )
     return app
 
 
@@ -196,7 +336,12 @@ def _mount_routes(app: FastAPI) -> None:
     app.include_router(cloud_ops.router)
     app.include_router(traces.router)
     app.include_router(metrics.router)
+    app.include_router(prometheus.router)
+    app.include_router(knowledge.router)
     app.include_router(benchmark.router)
+    app.include_router(audit.router)  # 审计哈希链：/api/audit/events、/api/audit/verify
+    app.include_router(alerts.router)  # 告警接入：/api/alerts/webhook
+    app.include_router(health.router)  # 健康探针：/healthz 存活、/readyz 就绪
 
 
 def _mount_static(app: FastAPI, directory: Path) -> None:

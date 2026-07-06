@@ -149,7 +149,10 @@ def create_cache(redis_url: str | None = None, namespace: str = "athena") -> Cac
         try:
             import redis  # 延迟导入，未安装 redis 时不影响其它功能
 
-            client = redis.Redis.from_url(redis_url, socket_connect_timeout=1)
+            # protocol=2 兼容旧版 Redis（<6 不支持 RESP3 的 HELLO 握手）
+            client = redis.Redis.from_url(
+                redis_url, socket_connect_timeout=1, protocol=2
+            )
             client.ping()
             return RedisCache(client, namespace=namespace)
         except Exception:

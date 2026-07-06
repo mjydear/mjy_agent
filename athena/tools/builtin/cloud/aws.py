@@ -25,3 +25,35 @@ class AWSClient(AliyunClient):
 
     provider_name = "aws"
     env_prefix = "ATHENA_AWS"
+
+    def _real_list_instances(self, region: str) -> dict:
+        """真实 AWS EC2 实例查询（缺 boto3/凭证时由 resolve_data 降级 Mock）。"""
+        import boto3  # 延迟导入，未装则降级
+
+        # region 用 AWS 习惯默认值，避免阿里云地域串到 AWS
+        aws_region = region if region.startswith(("us-", "eu-", "ap-")) else "us-east-1"
+        ec2 = boto3.client(
+            "ec2",
+            region_name=aws_region,
+            aws_access_key_id=self.access_key_id,
+            aws_secret_access_key=self.access_key_secret,
+        )
+        reservations = ec2.describe_instances().get("Reservations", [])
+        instances = []
+        for reservation in reservations:
+            for item in reservation.get("Instances", []):
+                name = ""
+                for tag in item.get("Tags", []):
+                    if tag.get("Key") == "Name":
+                        name = tag.get("Value", "")
+                instances.append(
+                    {
+                        "id": item.get("InstanceId", ""),
+                        "name": name,
+                        "status": item.get("State", {}).get("Name", "Unknown"),
+                        "cpu": 0,
+                        "memory": 0,
+                    }
+                )
+        return {"region": aws_region, "instances": instances}
+

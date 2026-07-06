@@ -12,6 +12,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from starlette.responses import StreamingResponse
 
+from athena.api.auth import TenantContext
+from athena.api.rbac import require_scope
 from athena.api.routes._deps import get_service
 from athena.api.schemas import CloudOpsMode, CloudOpsRequest, CloudOpsResponse
 from athena.api.services import AthenaWebService
@@ -37,7 +39,9 @@ async def list_modes(
 
 @router.post("/run", response_model=CloudOpsResponse)
 async def run_cloud_ops(
-    request: CloudOpsRequest, service: AthenaWebService = Depends(get_service)
+    request: CloudOpsRequest,
+    service: AthenaWebService = Depends(get_service),
+    tenant: TenantContext = Depends(require_scope("cloud:execute")),
 ) -> CloudOpsResponse:
     """
     同步运行一个云运维场景。
@@ -51,13 +55,19 @@ async def run_cloud_ops(
     🎯 面试考点：为什么路由不直接调用 K8sDiagnoser？答案：路由层应保持薄，只负责 HTTP 边界，业务编排放在 service 更容易测试和复用。
     """
     return await service.run_cloud_ops(
-        request.mode, request.task, request.provider, request.confirmed
+        request.mode,
+        request.task,
+        request.provider,
+        request.confirmed,
+        actor=tenant.tenant_id,
     )
 
 
 @router.post("/stream")
 async def stream_cloud_ops(
-    request: CloudOpsRequest, service: AthenaWebService = Depends(get_service)
+    request: CloudOpsRequest,
+    service: AthenaWebService = Depends(get_service),
+    tenant: TenantContext = Depends(require_scope("cloud:execute")),
 ) -> StreamingResponse:
     """
     以 SSE 形式流式运行云运维场景。

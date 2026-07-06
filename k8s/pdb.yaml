@@ -1,0 +1,12 @@
+# PodDisruptionBudget：滚动升级/节点维护时保证至少 1 个副本可用
+# 配合 HPA(minReplicas=2) 与优雅关闭(preStop+terminationGracePeriod)，实现零中断发布。
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: athena-api
+  namespace: athena
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: athena-api

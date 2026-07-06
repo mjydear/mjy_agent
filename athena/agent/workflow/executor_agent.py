@@ -9,8 +9,12 @@
 
 from __future__ import annotations
 
+import logging
+
 from athena.agent.workflow.base import WorkflowStep, WorkflowStepResult
 from athena.tools import ToolCall, ToolExecutor, ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 
 class ExecutorAgent:
@@ -21,6 +25,7 @@ class ExecutorAgent:
     参数说明：
         tool_registry：工具注册中心，不传则创建空注册中心。
         tool_executor：工具执行器，不传则用 registry 创建默认执行器。
+        llm_client：可选，无工具时用 LLM 生成步骤结果，否则返回占位文本。
     返回值：execute() 返回 WorkflowStepResult。
     设计思路：依赖注入让测试可以传入假工具，也让生产环境可以复用真实工具系统。
     使用示例：result = await ExecutorAgent(registry).execute(step)
@@ -30,18 +35,20 @@ class ExecutorAgent:
         self,
         tool_registry: ToolRegistry | None = None,
         tool_executor: ToolExecutor | None = None,
+        llm_client: "object | None" = None,
     ) -> None:
         self.tool_registry = tool_registry or ToolRegistry()
         self.tool_executor = tool_executor or ToolExecutor(self.tool_registry)
+        self.llm_client = llm_client
 
     async def execute(self, step: WorkflowStep) -> WorkflowStepResult:
         """
         执行一个计划步骤。
 
-        功能说明：如果步骤有可用 tool_hint，就调用工具；否则返回模拟执行文本。
+        功能说明：优先调用匹配工具；无工具时用 LLM 产出结果，LLM 缺失/失败则占位文本。
         参数说明：step 是 Planner 输出的步骤。
         返回值：WorkflowStepResult。
-        设计思路：MVP 阶段既能演示工具调用，也能在没有工具时跑通工作流。
+        设计思路：工具优先保证可执行性，LLM 兜底提升无工具步骤的实用性。
         使用示例：await executor.execute(WorkflowStep("step-1", "检查 git", "git_status"))
         """
         if not isinstance(step, WorkflowStep):
@@ -57,9 +64,34 @@ class ExecutorAgent:
                 output=result.content,
                 error=result.error,
             )
+        if self.llm_client is not None:
+            output = await self._llm_execute(step)
+            if output is not None:
+                return WorkflowStepResult(
+                    step_id=step.step_id, success=True, output=output
+                )
         return WorkflowStepResult(
             step_id=step.step_id, success=True, output=f"Executed: {step.goal}"
         )
+
+    async def _llm_execute(self, step: WorkflowStep) -> str | None:
+        """用 LLM 执行无工具步骤，失败返回 None 交由占位文本兜底。"""
+        try:
+            from athena.infra.llm import LLMMessage
+
+            response = await self.llm_client.complete(  # type: ignore[union-attr]
+                [
+                    LLMMessage(
+                        role="user",
+                        content=f"执行以下运维/任务步骤并给出简洁结果：{step.goal}",
+                    )
+                ]
+            )
+            text = (response.content or "").strip()
+            return text or None
+        except Exception as exc:
+            logger.warning("LLM step execution failed, using placeholder: %s", exc)
+            return None
 
 
 """

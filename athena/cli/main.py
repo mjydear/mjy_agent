@@ -37,6 +37,13 @@ from athena.cli.tui import run_tui
 from athena.config import load_settings
 from athena.exceptions import AthenaError
 from athena.infra.llm import LLMClientFactory
+from athena.infra.model_router import ModelRouter
+from athena.infra.resilience import (
+    ResilientLLMClient,
+    RetryPolicy,
+    default_fault_diagnose_fallback,
+    make_breaker,
+)
 from athena.logging import configure_logging
 from athena.memory import WorkingMemory
 from athena.prompt import ContextAssembler
@@ -107,6 +114,32 @@ def build_agent(config_path: Path | None = None) -> ReActAgent:
         temperature=settings.llm.temperature,
         max_tokens=settings.llm.max_tokens,
     )  # 💡 学习提示：工厂在这里检查 API Key 是否存在，缺少时立刻报错（"快速失败"原则）
+
+    # 多模型复杂度路由：简单查询走轻量模型，复杂查询走强模型（可选，默认关闭）
+    if settings.llm.routing.enabled:
+        light = LLMClientFactory.create(
+            provider=settings.llm.provider,
+            model=settings.llm.routing.light_model,
+            temperature=settings.llm.temperature,
+            max_tokens=settings.llm.max_tokens,
+        )
+        heavy = LLMClientFactory.create(
+            provider=settings.llm.provider,
+            model=settings.llm.routing.heavy_model,
+            temperature=settings.llm.temperature,
+            max_tokens=settings.llm.max_tokens,
+        )
+        llm_client = ModelRouter(
+            light, heavy, threshold=settings.llm.routing.threshold
+        )
+
+    # 韧性包裹：指数退避重试 + 熔断 + 大模型不可用时降级到本地规则排障建议
+    llm_client = ResilientLLMClient(
+        llm_client,
+        retry_policy=RetryPolicy(),
+        breaker=make_breaker("llm"),
+        fallback=default_fault_diagnose_fallback,
+    )
 
     # 💡 学习提示：ReActAgent 使用"依赖注入"——把所有组件作为参数传进去，
     # 而不是在 ReActAgent 内部自己创建。这样可以在测试时注入 mock 对象

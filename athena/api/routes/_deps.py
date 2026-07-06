@@ -47,6 +47,13 @@ def get_idempotency(request: Request) -> "IdempotencyManager":
     return cast(IdempotencyManager, request.app.state.idempotency)
 
 
+def get_knowledge_base(request: Request) -> "KnowledgeBaseManager":
+    """从 app.state 取出共享的知识库管理器。"""
+    from athena.memory.knowledge_base import KnowledgeBaseManager
+
+    return cast(KnowledgeBaseManager, request.app.state.knowledge_base)
+
+
 """
 🤔 思考题：
 

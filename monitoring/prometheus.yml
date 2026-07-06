@@ -1,0 +1,20 @@
+# Prometheus 抓取配置示例：抓取 Athena Agent 指标。
+# 使用：prometheus --config.file=monitoring/prometheus.yml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - prometheus-rules.yaml
+  - slo.yaml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]  # 部署时替换为实际 alertmanager 地址
+
+scrape_configs:
+  - job_name: athena-agent
+    metrics_path: /api/metrics/prometheus
+    static_configs:
+      - targets: ["host.docker.internal:8000"]  # 部署时替换为实际服务地址

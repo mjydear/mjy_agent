@@ -120,16 +120,62 @@ class UserProfile:
 
 class ProfileCurator:
     """
-    用户画像复盘器骨架。
+    用户画像复盘器：LLM 抽取偏好信号，缺失时降级规则。
 
     功能说明：
-        当前版本调用轻量规则抽取；未来可以把 review() 替换成 LLM 总结，
-        但 UserProfile 的更新接口保持不变，符合开闭原则。
+        review() 优先用 LLM 从对话文本抽取扁平画像信号并更新画像；
+        无 LLM 客户端或抽取失败时降级到 learn_from_text 规则抽取。
+    参数说明：
+        profile：待更新的用户画像。
+        llm_client：可选 LLM 客户端，注入后走真实语义抽取。
+    设计思路：企业级“真实实现 + 自动降级”，保证任何环境下画像都能持续演进。
     """
 
-    def __init__(self, profile: UserProfile) -> None:
+    def __init__(
+        self, profile: UserProfile, llm_client: "object | None" = None
+    ) -> None:
         self.profile = profile
+        self.llm_client = llm_client
 
     async def review(self, conversation_text: str) -> bool:
         """Review conversation text and update the profile when useful."""
+        if not isinstance(conversation_text, str) or not conversation_text.strip():
+            return False
+        if self.llm_client is not None:
+            signals = await self._llm_extract(conversation_text)
+            if signals:
+                return self.profile.update(signals, force=True)
         return self.profile.learn_from_text(conversation_text)
+
+    async def _llm_extract(self, text: str) -> dict[str, str]:
+        """用 LLM 抽取画像信号，失败返回空 dict 交由规则兜底。"""
+        import json
+        import logging
+
+        logger = logging.getLogger(__name__)
+        try:
+            from athena.infra.llm import LLMMessage
+
+            prompt = (
+                "从下面的用户对话中抽取稳定的用户画像信号，只输出 JSON 对象，"
+                "key 用 'preferences.xxx' / 'coding_style.xxx' / 'tech_stack.xxx' 形式，"
+                "value 为字符串；没有可抽取信息时输出 {}。\n"
+                f"对话：{text.strip()}"
+            )
+            response = await self.llm_client.complete(  # type: ignore[union-attr]
+                [LLMMessage(role="user", content=prompt)]
+            )
+            raw = response.content or ""
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                return {}
+            payload = json.loads(raw[start : end + 1])
+            return {
+                str(key): str(value)
+                for key, value in payload.items()
+                if isinstance(key, str) and value is not None
+            }
+        except Exception as exc:
+            logger.warning("LLM profile extraction failed, using rules: %s", exc)
+            return {}

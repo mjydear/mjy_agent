@@ -3,9 +3,27 @@ llm:
   model: deepseek/deepseek-chat
   temperature: 0.2
   max_tokens: 1024
+  routing:
+    # 多模型复杂度路由：开启需同时配置 light/heavy 模型的凭证
+    enabled: false
+    light_model: deepseek/deepseek-chat
+    heavy_model: deepseek/deepseek-chat
+    threshold: 0.5
 memory:
   working_max_tokens: 8000
   vector_top_k: 5
+embedding:
+  # 真实嵌入模型：开启需配置对应厂商 API Key，缺失时自动降级哈希嵌入
+  enabled: false
+  model: text-embedding-3-small
+  dimension: 1536
+vector_store:
+  # 向量库后端：memory | milvus；milvus 连不上时自动降级 memory
+  backend: memory
+  uri: http://localhost:19530
+  collection_name: athena_memory
+  dimension: 1536
+  metric_type: COSINE
 agent:
   max_steps: 6
 logging:
@@ -39,3 +57,9 @@ sandbox:
   cpu_time_seconds: 5
   memory_mb: 256
   timeout_seconds: 5.0
+observability:
+  # tracing_enabled=true 时启用 OpenTelemetry；otlp_endpoint 为空则用 Console 导出器
+  tracing_enabled: false
+  otlp_endpoint: null
+  service_name: athena-agent
+  metrics_enabled: true

@@ -214,7 +214,7 @@ class WorkflowEngine:
         """
         if not isinstance(task, str) or not task.strip():
             raise ValueError("task must be a non-empty string")
-        plan = self.planner.plan(
+        plan = await self.planner.aplan(
             task
         )  # 💡 学习提示：先规划再执行，比边想边做更适合复杂任务和可观测调试。
         state = WorkflowState(run_id=f"workflow-{int(time.time() * 1000)}", plan=plan)

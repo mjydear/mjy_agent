@@ -24,6 +24,14 @@ spec:
         target:
           type: Utilization
           averageUtilization: 80
+    # 自定义指标扩缩容（需部署 prometheus-adapter 暴露该指标，否则忽略此项）
+    - type: Pods
+      pods:
+        metric:
+          name: athena_http_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "50"
   behavior:
     scaleDown:
       stabilizationWindowSeconds: 120  # 缩容前观察 2 分钟，避免抖动

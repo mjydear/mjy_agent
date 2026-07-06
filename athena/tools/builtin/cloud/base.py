@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from collections.abc import Callable
@@ -16,6 +17,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from athena.types import JSONValue
+
+_logger = logging.getLogger(__name__)
 
 
 class CloudRiskLevel(StrEnum):
@@ -186,6 +189,37 @@ class CloudProviderClient:
         使用示例：client._audit_id("list_instances")
         """
         return f"{self.provider_name}-{operation}-{int(time.time() * 1000)}"
+
+    def has_real_credentials(self) -> bool:
+        """是否配置了真实云凭证（非 mock 占位）。"""
+        return (
+            bool(self.access_key_id)
+            and self.access_key_id != "mock-access-key"
+            and bool(self.access_key_secret)
+            and self.access_key_secret != "mock-secret"
+        )
+
+    def resolve_data(
+        self,
+        real_fn: Callable[[], dict[str, JSONValue]],
+        mock_fn: Callable[[], dict[str, JSONValue]],
+    ) -> dict[str, JSONValue]:
+        """
+        凭证就绪则走真实云 SDK，缺失或调用失败自动降级 Mock。
+
+        统一封装“真实优先 + Mock 兜底”，子类的 handler 只需传入两个函数。
+        """
+        if not self.has_real_credentials():
+            return mock_fn()
+        try:
+            return real_fn()
+        except Exception as exc:
+            _logger.warning(
+                "%s real SDK call failed, falling back to mock: %s",
+                self.provider_name,
+                exc,
+            )
+            return mock_fn()
 
 
 """

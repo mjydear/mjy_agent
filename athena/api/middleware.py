@@ -12,13 +12,40 @@ import time
 from collections.abc import Awaitable, Callable
 
 from fastapi import FastAPI, Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
-from athena.api.response import new_trace_id, set_trace_id
+from athena.api.response import get_trace_id, new_trace_id, set_trace_id
+from athena.api.schemas import ErrorResponse
+from athena.infra.resilience import RateLimiter, RateLimitExceeded
+from athena.observability.prometheus import PrometheusMetrics
 
 logger = logging.getLogger("athena.access")
 
 TRACE_HEADER = "X-Trace-Id"
+API_KEY_HEADER = "X-API-Key"
+
+
+def install_metrics_middleware(app: FastAPI, metrics: PrometheusMetrics) -> None:
+    """安装 Prometheus 指标采集中间件：记录每个请求的量、耗时与错误。"""
+
+    @app.middleware("http")
+    async def collect_metrics(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        started_at = time.perf_counter()
+        # 用路由模板而非真实路径，避免带 ID 的路径造成指标基数爆炸
+        route = request.scope.get("route")
+        path = getattr(route, "path", None) or request.url.path
+        try:
+            response = await call_next(request)
+        except Exception:
+            duration = time.perf_counter() - started_at
+            metrics.observe_request(request.method, path, 500, duration)
+            raise
+        duration = time.perf_counter() - started_at
+        metrics.observe_request(request.method, path, response.status_code, duration)
+        return response
+
 
 
 def install_trace_middleware(app: FastAPI) -> None:
@@ -55,3 +82,29 @@ def install_trace_middleware(app: FastAPI) -> None:
             duration_ms,
         )
         return response
+
+
+def install_rate_limit_middleware(app: FastAPI, limiter: RateLimiter) -> None:
+    """安装网关层限流中间件：全局 + 单租户固定窗口限流，超限返回 429。"""
+
+    @app.middleware("http")
+    async def rate_limit(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        # 仅对业务 API 限流，放行静态资源/文档/健康检查
+        if not request.url.path.startswith("/api/"):
+            return await call_next(request)
+        tenant = request.headers.get(API_KEY_HEADER) or "public"
+        try:
+            limiter.check(tenant)
+        except RateLimitExceeded as exc:
+            return JSONResponse(
+                status_code=429,
+                content=ErrorResponse(
+                    error_code="RATE_LIMITED",
+                    message=str(exc),
+                    trace_id=get_trace_id(),
+                ).model_dump(),
+                headers={"Retry-After": "60"},
+            )
+        return await call_next(request)

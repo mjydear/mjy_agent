@@ -12,6 +12,9 @@ python_version = "3.12"
 filterwarnings = [
     "ignore:Using `httpx` with `starlette.testclient` is deprecated",
 ]
+markers = [
+    "integration: 需要真实外部依赖(Redis/Milvus 等)的集成测试，缺依赖时自动跳过",
+]
 
 [[tool.mypy.overrides]]
 module = [

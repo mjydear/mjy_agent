@@ -40,6 +40,7 @@ class BenchmarkCase:
     query: str
     expected_keywords: tuple[str, ...]
     category: str = "normal"
+    golden_answer: str = ""
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -87,8 +88,16 @@ class BenchmarkEngine:
     🎯 面试考点：为什么 runner 用依赖注入？答案：可以同时评测单 Agent、多 Agent、假 Agent，而不改评测代码。
     """
 
-    def __init__(self, runner: AgentRunner) -> None:
+    def __init__(
+        self,
+        runner: AgentRunner,
+        embedding_provider: "object | None" = None,
+        semantic_threshold: float = 0.8,
+    ) -> None:
         self.runner = runner
+        # 语义评分：注入 embedding_provider 后用余弦相似度补充关键词匹配，缺失则纯关键词
+        self.embedding_provider = embedding_provider
+        self.semantic_threshold = semantic_threshold
 
     async def run_cases(self, cases: Sequence[BenchmarkCase]) -> list[BenchmarkResult]:
         """
@@ -114,10 +123,11 @@ class BenchmarkEngine:
             )  # 💡 学习提示：perf_counter 适合测耗时，比 time.time 更适合性能统计。
             response = await self.runner(case.query)
             duration = time.perf_counter() - started_at
-            success = all(
+            keyword_hit = all(
                 keyword.lower() in response.answer.lower()
                 for keyword in case.expected_keywords
-            )  # 💡 学习提示：关键词法简单但粗糙，适合 MVP，不适合最终语义评测。
+            )  # 💡 学习提示：关键词法简单可解释，作为语义评分不可用时的降级基线。
+            success = keyword_hit or await self._semantic_success(response.answer, case)
             hallucination = self._detect_hallucination(response, case)
             recovery_success = case.category != "exception" or success
             results.append(
@@ -131,6 +141,43 @@ class BenchmarkEngine:
                 )
             )
         return results
+
+    async def _semantic_success(
+        self, answer: str, case: BenchmarkCase
+    ) -> bool:
+        """
+        用嵌入余弦相似度判定语义命中，缺失/失败时返回 False 交回关键词兜底。
+
+        功能说明：把答案与参考文本（golden_answer 或期望关键词）嵌入后算余弦相似度。
+        参数说明：answer 是 Agent 输出；case 提供参考文本与阈值语义。
+        返回值：相似度 ≥ semantic_threshold 时 True，否则 False。
+        设计思路：语义评分更贴近真实质量，embedding 不可用时不影响关键词基线。
+        """
+        if self.embedding_provider is None or not answer.strip():
+            return False
+        reference = case.golden_answer.strip() or " ".join(case.expected_keywords)
+        if not reference.strip():
+            return False
+        try:
+            answer_vec = await self.embedding_provider.embed(answer)  # type: ignore[union-attr]
+            reference_vec = await self.embedding_provider.embed(reference)  # type: ignore[union-attr]
+            return self._cosine(answer_vec, reference_vec) >= self.semantic_threshold
+        except Exception:
+            return False
+
+    @staticmethod
+    def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
+        """计算两个向量的余弦相似度（零向量返回 0）。"""
+        import math
+
+        if not a or not b or len(a) != len(b):
+            return 0.0
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = math.sqrt(sum(x * x for x in a))
+        norm_b = math.sqrt(sum(y * y for y in b))
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return dot / (norm_a * norm_b)
 
     def _detect_hallucination(
         self, response: AgentResponse, case: BenchmarkCase

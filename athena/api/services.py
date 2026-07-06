@@ -158,6 +158,14 @@ class AthenaWebService:
         session_ttl_seconds: int = 3600,
         tracer: Tracer | None = None,
         metrics: RuntimeMetrics | None = None,
+        session_store: "SessionStore | None" = None,
+        ops_knowledge: "OpsKnowledgeBase | None" = None,
+        workflow_llm: "object | None" = None,
+        embedding_provider: "object | None" = None,
+        task_store: "TaskStore | None" = None,
+        metrics_store: "MetricsStore | None" = None,
+        benchmark_store: "BenchmarkStore | None" = None,
+        audit_store: "object | None" = None,
     ) -> None:
         if session_ttl_seconds <= 0:
             raise ValueError("session_ttl_seconds must be positive")
@@ -165,14 +173,40 @@ class AthenaWebService:
         self.session_ttl_seconds = session_ttl_seconds
         self.tracer = tracer or Tracer()
         self.metrics = metrics or RuntimeMetrics()
-        self.sessions: dict[str, WebSession] = (
-            {}
-        )  # 💡 学习提示：MVP 用内存字典保存会话；生产环境可替换成 Redis 或数据库。
-        self.tasks: dict[str, TaskRecord] = {}
-        self.benchmark_reports: dict[str, BenchmarkRunResponse] = {}
-        self.error_distribution: dict[str, int] = {}
-        self.token_usage = 0
-        self.ops_knowledge = OpsKnowledgeBase()
+        # 会话持久化：默认内存后端，生产由 create_app 注入 Redis 后端的 SessionStore
+        if session_store is None:
+            from athena.api.session_store import SessionStore
+            from athena.infra.cache import InMemoryCache
+
+            session_store = SessionStore(
+                InMemoryCache(namespace="athena"), ttl_seconds=session_ttl_seconds
+            )
+        self.session_store = session_store
+        # 任务/评测/指标持久化：默认内存后端，生产由 create_app 注入 Redis 后端
+        from athena.api.task_store import BenchmarkStore, MetricsStore, TaskStore
+        from athena.infra.cache import InMemoryCache as _InMemoryCache
+
+        _shared_cache = getattr(self.session_store, "_cache", None) or _InMemoryCache(
+            namespace="athena"
+        )
+        self.task_store = task_store or TaskStore(
+            _shared_cache, ttl_seconds=session_ttl_seconds
+        )
+        self.metrics_store = metrics_store or MetricsStore(_shared_cache)
+        self.benchmark_store = benchmark_store or BenchmarkStore(_shared_cache)
+        # 审计哈希链：默认复用共享缓存，记录敏感写操作，可校验防篡改
+        if audit_store is None:
+            from athena.tools.audit_chain import HashChainAuditStore
+
+            audit_store = HashChainAuditStore(_shared_cache)
+        self.audit_store = audit_store
+        # 运行态 Agent 按进程缓存，重启后依据持久化的消息历史惰性重建
+        self._agents: dict[str, ReActAgent] = {}
+        self.ops_knowledge = ops_knowledge or OpsKnowledgeBase()
+        # 工作流 LLM：注入后 Planner/Executor 走真实 LLM，缺失则规则/占位降级
+        self.workflow_llm = workflow_llm
+        # 评测嵌入：注入后 Benchmark 走语义评分，缺失则关键词匹配
+        self.embedding_provider = embedding_provider
 
     def create_session(self, title: str | None = None) -> SessionDetail:
         """
@@ -186,12 +220,11 @@ class AthenaWebService:
         """
         self.cleanup_expired_sessions()  # 💡 学习提示：创建新会话前顺手清理旧会话，避免长期运行时内存慢慢涨。
         session_id = f"session-{uuid.uuid4().hex[:12]}"  # 💡 学习提示：uuid 比自增 id 更适合 Web 场景，避免用户猜到相邻会话 id。
-        session = WebSession(
-            session_id=session_id,
-            title=title or "New Athena Session",
-            agent=self.agent_factory(),  # 💡 学习提示：真正隔离记忆的关键点就在这里：每个 session 一个新 Agent。
-        )
-        self.sessions[session_id] = session
+        stored = self.session_store.create(
+            session_id, title or "New Athena Session"
+        )  # 先落库，保证重启/多副本可见
+        session = self._runtime_session(stored)
+        self._agents[session_id] = session.agent
         return self._session_detail(session)
 
     def list_sessions(self) -> list[SessionSummary]:
@@ -205,7 +238,10 @@ class AthenaWebService:
         使用示例：sessions = service.list_sessions()
         """
         self.cleanup_expired_sessions()
-        return [self._session_summary(session) for session in self.sessions.values()]
+        return [
+            self._summary_from_stored(stored)
+            for stored in self.session_store.list()
+        ]
 
     def get_session(self, session_id: str) -> SessionDetail:
         """Return one active session by id.
@@ -248,7 +284,7 @@ class AthenaWebService:
             ChatMessage(role="user", content=message, created_at=time.time())
         )
         record = TaskRecord(task_id=task_id, status="running")
-        self.tasks[task_id] = record
+        self.task_store.save(record)
         try:
             response = await session.agent.run(message)
             steps = self._steps_from_strings(
@@ -262,10 +298,12 @@ class AthenaWebService:
                 )
             )
             session.updated_at = time.time()
+            self._persist_session(session)  # 会话历史落库，重启/多副本可延续
             record.status = "success"
             record.answer = response.answer
             record.steps = steps
             record.updated_at = time.time()
+            self.task_store.save(record)  # 任务结果落库，重启/多副本可查
             return ChatResponse(
                 task_id=task_id,
                 session_id=session_id,
@@ -301,7 +339,7 @@ class AthenaWebService:
             ChatMessage(role="user", content=message, created_at=time.time())
         )
         record = TaskRecord(task_id=task_id, status="running")
-        self.tasks[task_id] = record
+        self.task_store.save(record)
         yield self._sse(
             {
                 "event_type": "task",
@@ -342,6 +380,8 @@ class AthenaWebService:
             record.status = "success"
             record.updated_at = time.time()
             session.updated_at = time.time()
+            self._persist_session(session)  # 会话历史落库，重启/多副本可延续
+            self.task_store.save(record)  # 任务结果落库，重启/多副本可查
             yield self._sse(
                 {
                     "event_type": "done",
@@ -362,7 +402,7 @@ class AthenaWebService:
             )
 
     async def run_workflow(
-        self, task: str, workflow_type: str = "plan_execute"
+        self, task: str, workflow_type: str = "plan_execute", actor: str = "system"
     ) -> WorkflowRunResponse:
         """
         执行多 Agent 工作流。
@@ -383,10 +423,12 @@ class AthenaWebService:
         task_id = self._new_task_id("workflow")
         started_at = time.perf_counter()
         record = TaskRecord(task_id=task_id, status="running")
-        self.tasks[task_id] = record
+        self.task_store.save(record)
         try:
             engine = WorkflowEngine(
-                PlannerAgent(), ExecutorAgent(), ValidatorAgent()
+                PlannerAgent(llm_client=self.workflow_llm),
+                ExecutorAgent(llm_client=self.workflow_llm),
+                ValidatorAgent(),
             )  # 💡 学习提示：这里组装三角色，体现“规划-执行-校验”的职责拆分。
             response = await engine.run(task)
             steps = self._steps_from_strings(response.steps)
@@ -397,11 +439,14 @@ class AthenaWebService:
             record.answer = response.answer
             record.steps = steps
             record.updated_at = time.time()
+            self.task_store.save(record)  # 任务结果落库，重启/多副本可查
+            self._audit(actor, "workflow.run", task_id, True, workflow_type)
             return WorkflowRunResponse(
                 task_id=task_id, status="success", answer=response.answer, steps=steps
             )
         except Exception as exc:
             self._record_failure(record, exc, started_at)
+            self._audit(actor, "workflow.run", task_id, False, str(exc))
             raise ApiServiceError("WORKFLOW_FAILED", str(exc)) from exc
 
     def get_task_status(self, task_id: str) -> WorkflowStatusResponse:
@@ -456,11 +501,49 @@ class AthenaWebService:
             total_tasks=total,
             success_rate=self.metrics.success_rate(),
             average_duration_seconds=average_duration,
-            token_usage=self.token_usage,
-            error_distribution=dict(self.error_distribution),
+            token_usage=self.metrics_store.token_usage(),
+            error_distribution=self.metrics_store.error_distribution(),
         )
 
-    async def run_benchmark(self, case_set: str = "default") -> BenchmarkRunResponse:
+    def list_audit_events(
+        self, limit: int = 50, tenant_id: str | None = None
+    ) -> list[dict[str, object]]:
+        """返回最近的审计记录（哈希链），可按租户过滤。"""
+        from dataclasses import asdict as _asdict
+
+        store = getattr(self, "audit_store", None)
+        if store is None:
+            return []
+        return [_asdict(record) for record in store.list(limit, tenant_id)]
+
+    def verify_audit_chain(self) -> dict[str, object]:
+        """校验审计哈希链完整性，返回 valid/checked/broken_at。"""
+        store = getattr(self, "audit_store", None)
+        if store is None:
+            return {"valid": True, "checked": 0, "broken_at": None, "head": 0}
+        return store.verify_chain()
+
+    def ingest_alert(self, payload: dict[str, object]) -> dict[str, object]:
+        """接收 Alertmanager webhook，标准化并写入审计链。"""
+        from athena.integration.alert_webhook import AlertWebhookParser
+
+        alert = AlertWebhookParser().parse(payload)
+        self._audit(
+            "alertmanager",
+            "alert.received",
+            alert.alert_name,
+            alert.severity != "critical",
+            f"severity={alert.severity}",
+        )
+        return {
+            "status": "accepted",
+            "alert_name": alert.alert_name,
+            "severity": alert.severity,
+        }
+
+    async def run_benchmark(
+        self, case_set: str = "default", actor: str = "system"
+    ) -> BenchmarkRunResponse:
         """
         运行一个轻量 Benchmark 并保存报告。
 
@@ -485,10 +568,13 @@ class AthenaWebService:
                 expected_keywords=("diagnosis",),
             ),
         )
-        results = await BenchmarkEngine(runner).run_cases(cases)
+        results = await BenchmarkEngine(
+            runner, embedding_provider=self.embedding_provider
+        ).run_cases(cases)
         report = BenchmarkReport.from_results(results).to_markdown()
         response = BenchmarkRunResponse(run_id=run_id, status="success", report=report)
-        self.benchmark_reports[run_id] = response
+        self.benchmark_store.save(response)
+        self._audit(actor, "benchmark.run", run_id, True, case_set)
         return response
 
     def get_benchmark_report(self, run_id: str) -> BenchmarkReportResponse:
@@ -501,7 +587,7 @@ class AthenaWebService:
         设计思路：报告生成和报告查询分离，贴近真实异步评测系统的接口形态。
         使用示例：report = service.get_benchmark_report(run_id)
         """
-        report = self.benchmark_reports.get(run_id)
+        report = self.benchmark_store.get(run_id)
         if report is None:
             raise ApiServiceError(
                 "BENCHMARK_NOT_FOUND", f"Benchmark run not found: {run_id}"
@@ -549,6 +635,7 @@ class AthenaWebService:
         task: str = "",
         provider: str = "aliyun",
         confirmed: bool = False,
+        actor: str = "system",
     ) -> CloudOpsResponse:
         """
         运行一个 CloudOps 场景并记录轨迹。
@@ -566,7 +653,7 @@ class AthenaWebService:
         task_id = self._new_task_id(f"cloud-{mode}")
         started_at = time.perf_counter()
         record = TaskRecord(task_id=task_id, status="running")
-        self.tasks[task_id] = record
+        self.task_store.save(record)
         try:
             answer, steps, data, requires_confirmation = self._dispatch_cloud_ops(
                 mode, task, provider, confirmed
@@ -581,6 +668,14 @@ class AthenaWebService:
             record.answer = answer
             record.steps = steps
             record.updated_at = time.time()
+            self.task_store.save(record)  # 任务结果落库，重启/多副本可查
+            self._audit(
+                actor,
+                f"cloud_ops.{mode}",
+                task_id,
+                not requires_confirmation,
+                f"provider={provider};confirmed={confirmed}",
+            )
             return CloudOpsResponse(
                 task_id=task_id,
                 mode=mode,
@@ -592,6 +687,7 @@ class AthenaWebService:
             )
         except Exception as exc:
             self._record_failure(record, exc, started_at)
+            self._audit(actor, f"cloud_ops.{mode}", task_id, False, str(exc))
             raise ApiServiceError("CLOUD_OPS_FAILED", str(exc)) from exc
 
     async def stream_cloud_ops(
@@ -888,27 +984,72 @@ class AthenaWebService:
         设计思路：MVP 用被动清理，创建/列出会话时顺便执行，不需要额外后台线程。
         使用示例：service.cleanup_expired_sessions()
         """
-        now = time.time()
-        expired = [
-            session_id
-            for session_id, session in self.sessions.items()
-            if now - session.updated_at > self.session_ttl_seconds
-        ]  # 💡 学习提示：先收集 id 再删除，避免遍历 dict 时修改 dict。
-        for session_id in expired:
-            del self.sessions[session_id]
+        # 持久化层依赖 TTL 自动过期；这里只需清理进程内失效的运行态 Agent 缓存。
+        alive_ids = {stored.session_id for stored in self.session_store.list()}
+        stale = [sid for sid in self._agents if sid not in alive_ids]
+        for session_id in stale:  # 💡 学习提示：先收集 id 再删除，避免遍历 dict 时修改 dict。
+            del self._agents[session_id]
+
+    def _runtime_session(self, stored: "StoredSession") -> WebSession:
+        """由持久化记录构建运行态 WebSession（含惰性重建的 Agent）。"""
+        agent = self._agents.get(stored.session_id)
+        if agent is None:
+            agent = self.agent_factory()  # 每个会话独立 Agent，隔离工作记忆
+        return WebSession(
+            session_id=stored.session_id,
+            title=stored.title,
+            agent=agent,
+            created_at=stored.created_at,
+            updated_at=stored.updated_at,
+            messages=[
+                ChatMessage(role=m.role, content=m.content, created_at=m.created_at)
+                for m in stored.messages
+            ],
+        )
+
+    def _persist_session(self, session: WebSession) -> None:
+        """把运行态会话的最新状态写回持久化存储。"""
+        from athena.api.session_store import StoredMessage, StoredSession
+
+        self.session_store.save(
+            StoredSession(
+                session_id=session.session_id,
+                title=session.title,
+                created_at=session.created_at,
+                updated_at=time.time(),
+                messages=[
+                    StoredMessage(
+                        role=m.role, content=m.content, created_at=m.created_at
+                    )
+                    for m in session.messages
+                ],
+            )
+        )
+
+    def _summary_from_stored(self, stored: "StoredSession") -> SessionSummary:
+        """由持久化记录直接构建列表摘要，无需重建 Agent。"""
+        return SessionSummary(
+            session_id=stored.session_id,
+            title=stored.title,
+            created_at=stored.created_at,
+            updated_at=stored.updated_at,
+            message_count=len(stored.messages),
+        )
 
     def _require_session(self, session_id: str) -> WebSession:
-        """读取会话，不存在时抛出标准 API 错误。"""
-        session = self.sessions.get(session_id)
-        if session is None:
+        """读取会话：优先进程缓存，否则从持久化存储惰性重建。"""
+        stored = self.session_store.get(session_id)
+        if stored is None:
             raise ApiServiceError(
                 "SESSION_NOT_FOUND", f"Session not found: {session_id}"
             )
+        session = self._runtime_session(stored)
+        self._agents[session_id] = session.agent
         return session
 
     def _require_task(self, task_id: str) -> TaskRecord:
         """读取任务记录，不存在时抛出标准 API 错误。"""
-        record = self.tasks.get(task_id)
+        record = self.task_store.get(task_id)
         if record is None:
             raise ApiServiceError("TASK_NOT_FOUND", f"Task not found: {task_id}")
         return record
@@ -942,19 +1083,37 @@ class AthenaWebService:
     ) -> None:
         """统一记录失败任务的状态、错误分布和耗时指标。"""
         error_name = exc.__class__.__name__
-        self.error_distribution[error_name] = (
-            self.error_distribution.get(error_name, 0) + 1
-        )
+        self.metrics_store.incr_error(error_name)
         self.metrics.record_task(
             success=False, duration_seconds=time.perf_counter() - started_at
         )
         record.status = "failed"
         record.error = str(exc)
         record.updated_at = time.time()
+        self.task_store.save(record)  # 失败状态也落库，保证可查
 
     def _new_task_id(self, prefix: str) -> str:
         """生成带业务前缀的任务 id，方便日志中一眼看出任务类型。"""
         return f"{prefix}-{uuid.uuid4().hex[:12]}"
+
+    def _audit(
+        self, actor: str, action: str, resource: str, success: bool, detail: str = ""
+    ) -> None:
+        """向审计哈希链追加一条记录；审计失败不影响主流程。"""
+        store = getattr(self, "audit_store", None)
+        if store is None:
+            return
+        try:
+            store.append(
+                actor=actor,
+                tenant_id=actor,
+                action=action,
+                resource=resource,
+                success=success,
+                detail=detail,
+            )
+        except Exception:  # noqa: BLE001 - 审计是旁路，不能拖垮业务请求
+            pass
 
     def _sse(self, payload: dict[str, object]) -> str:
         """

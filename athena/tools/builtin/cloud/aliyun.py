@@ -47,26 +47,53 @@ class AliyunClient(CloudProviderClient):
         )
         return self.execute(
             operation,
-            lambda: {
-                "region": region,
-                "instances": [
-                    {
-                        "id": "i-prod-api-01",
-                        "name": "prod-api-01",
-                        "status": "Running",
-                        "cpu": 18.4,
-                        "memory": 42.0,
-                    },
-                    {
-                        "id": "i-idle-batch-02",
-                        "name": "idle-batch-02",
-                        "status": "Running",
-                        "cpu": 1.2,
-                        "memory": 7.5,
-                    },
-                ],
-            },
+            lambda: self.resolve_data(
+                real_fn=lambda: self._real_list_instances(region),
+                mock_fn=lambda: {
+                    "region": region,
+                    "instances": [
+                        {
+                            "id": "i-prod-api-01",
+                            "name": "prod-api-01",
+                            "status": "Running",
+                            "cpu": 18.4,
+                            "memory": 42.0,
+                        },
+                        {
+                            "id": "i-idle-batch-02",
+                            "name": "idle-batch-02",
+                            "status": "Running",
+                            "cpu": 1.2,
+                            "memory": 7.5,
+                        },
+                    ],
+                },
+            ),
         )
+
+    def _real_list_instances(self, region: str) -> dict:
+        """真实阿里云 ECS 实例查询（缺 SDK/凭证时由 resolve_data 降级）。"""
+        from aliyunsdkcore.client import AcsClient  # 延迟导入，未装则降级
+        from aliyunsdkecs.request.v20140526.DescribeInstancesRequest import (
+            DescribeInstancesRequest,
+        )
+        import json
+
+        client = AcsClient(self.access_key_id, self.access_key_secret, region)
+        request = DescribeInstancesRequest()
+        request.set_accept_format("json")
+        response = json.loads(client.do_action_with_exception(request))
+        instances = [
+            {
+                "id": item.get("InstanceId", ""),
+                "name": item.get("InstanceName", ""),
+                "status": item.get("Status", "Unknown"),
+                "cpu": item.get("Cpu", 0),
+                "memory": item.get("Memory", 0),
+            }
+            for item in response.get("Instances", {}).get("Instance", [])
+        ]
+        return {"region": region, "instances": instances}
 
     def check_security_groups(self, region: str = "cn-hangzhou"):
         """

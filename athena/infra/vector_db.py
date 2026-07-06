@@ -602,6 +602,42 @@ def _cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
     # numpy 底层是 C，同样操作速度快 100x 以上。
 
 
+# ============================================================
+# 📌 工厂层：按配置选择向量库后端（Milvus / 内存）
+# ============================================================
+
+
+def create_vector_store(settings: object | None = None) -> VectorStore:
+    """
+    根据配置构建向量库：backend=milvus 且可连通则用 Milvus，否则降级内存。
+
+    settings 期望具有 vector_store.backend/uri/collection_name/dimension/metric_type。
+    Milvus 连接探测失败时自动退回 InMemoryVectorStore，保证服务可启动。
+    """
+    cfg = getattr(settings, "vector_store", None) if settings is not None else None
+    backend = getattr(cfg, "backend", "memory") if cfg is not None else "memory"
+    if backend != "milvus":
+        return InMemoryVectorStore()
+
+    store = MilvusVectorStore(
+        uri=getattr(cfg, "uri", "http://localhost:19530"),
+        collection_name=getattr(cfg, "collection_name", "athena_memory"),
+        dimension=getattr(cfg, "dimension", 1536),
+        metric_type=getattr(cfg, "metric_type", "COSINE"),
+    )
+    try:
+        # 探测连通性：能建客户端并列出集合即视为可用
+        client = store._client()
+        cast("MilvusClientProtocol", client).has_collection(store.collection_name)
+        return store
+    except Exception as exc:  # 未装 pymilvus / 连不上 → 降级
+        logger.warning(
+            "Milvus backend unavailable (%s), falling back to in-memory vector store",
+            exc,
+        )
+        return InMemoryVectorStore()
+
+
 """
 🤔 思考题（结合这个文件深入思考）：
 

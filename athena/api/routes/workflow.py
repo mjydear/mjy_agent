@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
+from athena.api.auth import TenantContext
+from athena.api.rbac import require_scope
 from athena.api.routes._deps import get_service
 from athena.api.schemas import (
     WorkflowRunRequest,
@@ -24,19 +26,21 @@ router = APIRouter(prefix="/api/workflow", tags=["workflow"])
 
 @router.post("/run", response_model=WorkflowRunResponse)
 async def run_workflow(
-    request: WorkflowRunRequest, service: AthenaWebService = Depends(get_service)
+    request: WorkflowRunRequest,
+    service: AthenaWebService = Depends(get_service),
+    tenant: TenantContext = Depends(require_scope("workflow:run")),
 ) -> WorkflowRunResponse:
     """
     启动多 Agent 工作流。
 
     功能说明：接收复杂任务文本，交给服务层运行 plan_execute 工作流。
-    参数说明：request 包含 task 和 workflow_type；service 是注入的服务层。
+    参数说明：request 包含 task 和 workflow_type；service 是注入的服务层；tenant 需带 workflow:run scope。
     返回值：WorkflowRunResponse。
     设计思路：API 保留 workflow_type，未来可以扩展不同工作流，而不改路径。
     使用示例：POST /api/workflow/run {"task":"收集日志; 校验"}
     """
     return await service.run_workflow(
-        task=request.task, workflow_type=request.workflow_type
+        task=request.task, workflow_type=request.workflow_type, actor=tenant.tenant_id
     )
 
 

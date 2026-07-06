@@ -1,0 +1,60 @@
+# Prometheus 告警规则：Athena Agent 企业级监控
+# 加载方式：在 prometheus.yml 的 rule_files 中引用本文件。
+groups:
+  - name: athena-agent-alerts
+    rules:
+      - alert: AthenaHighErrorRate
+        # 5xx 错误率超过 5% 持续 2 分钟
+        expr: |
+          sum(rate(athena_http_errors_total{status=~"5.."}[5m]))
+            / sum(rate(athena_http_requests_total[5m])) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Athena 5xx 错误率过高"
+          description: "近5分钟 5xx 错误率 {{ $value | humanizePercentage }} 超过阈值 5%"
+
+      - alert: AthenaHighLatencyP99
+        # P99 延迟超过 500ms 持续 3 分钟
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(athena_http_request_duration_seconds_bucket[5m])) by (le)) > 0.5
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Athena 请求 P99 延迟过高"
+          description: "P99 延迟 {{ $value }}s 超过 500ms 目标"
+
+      - alert: AthenaLowCacheHitRatio
+        # 缓存命中率低于 60% 持续 10 分钟
+        expr: athena_cache_hit_ratio < 0.6
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Athena 缓存命中率偏低"
+          description: "命名空间 {{ $labels.namespace }} 命中率 {{ $value | humanizePercentage }}"
+
+      - alert: AthenaCriticalIncident
+        # 出现 L3 及以上故障事件
+        expr: increase(athena_incidents_total{severity=~"L3|L4"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Athena 出现严重故障事件"
+          description: "近5分钟出现 {{ $labels.severity }} 级故障 {{ $value }} 次"
+
+      - alert: AthenaSlowVectorRetrieval
+        # 向量检索 P95 超过 50ms 持续 5 分钟
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(athena_vector_retrieval_seconds_bucket[5m])) by (le)) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Athena 向量检索变慢"
+          description: "向量检索 P95 {{ $value }}s 超过 50ms 目标"

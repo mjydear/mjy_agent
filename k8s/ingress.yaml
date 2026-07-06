@@ -1,0 +1,29 @@
+# Ingress：对外暴露 Athena API，启用 TLS 与基础限流注解
+# 前置条件：集群已装 ingress-nginx 与 cert-manager（用于自动签发证书）。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: athena-api
+  namespace: athena
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/limit-rps: "50"       # 每源每秒 50 请求
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - athena.example.com
+      secretName: athena-tls
+  rules:
+    - host: athena.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: athena-api
+                port:
+                  number: 8000

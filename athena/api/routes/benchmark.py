@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
+from athena.api.auth import TenantContext
+from athena.api.rbac import require_scope
 from athena.api.routes._deps import get_service
 from athena.api.schemas import (
     BenchmarkReportResponse,
@@ -24,7 +26,9 @@ router = APIRouter(prefix="/api/benchmark", tags=["benchmark"])
 
 @router.post("/run", response_model=BenchmarkRunResponse)
 async def run_benchmark(
-    request: BenchmarkRunRequest, service: AthenaWebService = Depends(get_service)
+    request: BenchmarkRunRequest,
+    service: AthenaWebService = Depends(get_service),
+    tenant: TenantContext = Depends(require_scope("benchmark:run")),
 ) -> BenchmarkRunResponse:
     """
     启动 Benchmark 评测。
@@ -35,7 +39,7 @@ async def run_benchmark(
     设计思路：路由只转发 case_set，不关心评测如何打分，这样 BenchmarkEngine 可以独立演进。
     使用示例：POST /api/benchmark/run {"case_set":"smoke"}
     """
-    return await service.run_benchmark(request.case_set)
+    return await service.run_benchmark(request.case_set, actor=tenant.tenant_id)
 
 
 @router.get("/{run_id}/report", response_model=BenchmarkReportResponse)

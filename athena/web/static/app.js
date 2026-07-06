@@ -26,6 +26,7 @@ const state = {
   latestTaskId: null,
   traceEvents: [],
   benchmarkReport: "",
+  model: "deepseek-chat", // 需求3：当前选中模型，供 UI 展示与后续请求扩展。
   abortController: null, // 💡 学习提示：AbortController 是浏览器取消 fetch 流请求的标准方式。
 };
 
@@ -43,7 +44,26 @@ const elements = {
   cancel: document.getElementById("cancel-stream"),
   detailAside: document.getElementById("detail-aside"), // 💡 学习提示：右侧面板容器，折叠时改变它的宽度。
   toggleDetail: document.getElementById("toggle-detail"),
+  sessionSearch: document.getElementById("session-search"), // 💡 学习提示：会话搜索框，仅前端过滤不请求后端。
+  sidebar: document.getElementById("sidebar"), // 需求1：侧边栏容器，收起/展开切换 collapsed 类。
+  sidebarToggle: document.getElementById("sidebar-toggle"),
+  modeDropdown: document.getElementById("mode-dropdown"), // 需求2：访问模式下拉。
+  modeTrigger: document.getElementById("mode-trigger"),
+  modeCurrent: document.getElementById("mode-current"),
+  cloudPanel: document.getElementById("cloud-mode-panel"),
+  modelDropdown: document.getElementById("model-dropdown"), // 需求3：模型选择器。
+  modelTrigger: document.getElementById("model-trigger"),
+  modelCurrent: document.getElementById("model-current"),
+  modelDot: document.getElementById("model-dot"),
 };
+
+// 💡 学习提示：空态欢迎页的建议卡片，点击后自动切换模式并填充输入框，降低上手门槛。
+const SUGGESTIONS = [
+  { icon: "🚀", title: "介绍一下 Athena Agent", desc: "了解自研 Agent 核心能力", mode: "chat", prompt: "介绍一下 Athena Agent 的整体架构和核心能力" },
+  { icon: "☸️", title: "诊断 K8s 崩溃故障", desc: "云运维 · K8s 运维", mode: "cloud", cloudMode: "k8s", prompt: "诊断 payment 服务的 CrashLoopBackOff" },
+  { icon: "💸", title: "云成本优化巡检", desc: "云运维 · 成本优化", mode: "cloud", cloudMode: "cost", prompt: "帮我做一次云成本优化巡检，找出闲置资源" },
+  { icon: "🔀", title: "多 Agent 排查线上延迟", desc: "多 Agent 工作流", mode: "workflow", prompt: "编排多 Agent 排查生产环境 API 延迟升高" },
+];
 
 /**
  * 更新右上角运行状态。
@@ -59,6 +79,10 @@ function setStatus(text, busy = false) {
   // 💡 学习提示：状态样式收敛成三种语义类（就绪/忙碌/错误），由 CSS 统一控制配色。
   const variant = text === "Error" ? "error" : busy ? "busy" : "ready";
   elements.statusPill.className = `status-pill status-pill--${variant}`;
+  // 需求3：模型选择器内嵌的状态指示灯同步颜色（绿/橙/红）。
+  if (elements.modelDot) {
+    elements.modelDot.className = `dot${variant === "ready" ? "" : ` ${variant}`}`;
+  }
 }
 
 /**
@@ -133,6 +157,34 @@ async function selectSession(sessionId) {
 }
 
 /**
+ * 删除指定会话。
+ *
+ * 功能说明：二次确认后调用后端 DELETE 接口，刷新列表；删除当前会话时自动切到下一条或空态。
+ * 参数说明：sessionId 是待删除会话 id；card 是触发删除的列表项 DOM，用于播放轻量移除动画。
+ * 返回值：Promise<void>。
+ * 设计思路：删除按钮独立于会话点击，stopPropagation 避免误切换会话。
+ * 使用示例：await deleteSession("session-xxx", card)
+ */
+async function deleteSession(sessionId, card) {
+  const session = state.sessions.find((item) => item.session_id === sessionId);
+  const title = session?.title || "该会话";
+  if (!confirm(`确认删除「${title}」吗？`)) return;
+
+  card?.classList.add("deleting");
+  await api(`/api/sessions/${sessionId}`, { method: "DELETE" });
+  if (state.currentSessionId === sessionId) {
+    state.abortController?.abort();
+    state.currentSessionId = null;
+    await loadSessions();
+    const nextSession = getVisibleSessions()[0];
+    if (nextSession) await selectSession(nextSession.session_id);
+    else renderMessages([]);
+    return;
+  }
+  await loadSessions();
+}
+
+/**
  * 获取侧边栏需要展示的会话。
  *
  * 功能说明：隐藏历史空会话，但保留当前刚创建的空会话。
@@ -156,13 +208,70 @@ function getVisibleSessions() {
  */
 function renderSessions() {
   elements.sessionList.innerHTML = "";
-  getVisibleSessions().forEach((session) => {
-    const button = document.createElement("button");
-    button.className = `session-card ${session.session_id === state.currentSessionId ? "active" : ""}`;
-    button.innerHTML = `<div class="font-semibold text-sm text-[#1d2129]">${escapeHtml(session.title)}</div><div class="mt-1 text-xs text-[#86909c]">${session.message_count} 条消息</div>`; // 💡 学习提示：用户可控文本进 innerHTML 前必须 escapeHtml，防止脚本注入。
-    button.addEventListener("click", () => selectSession(session.session_id));
-    elements.sessionList.appendChild(button);
+  const keyword = (elements.sessionSearch?.value || "").trim().toLowerCase(); // 💡 学习提示：搜索关键字仅前端过滤，输入即时生效。
+  const visible = getVisibleSessions().filter(
+    (session) => !keyword || session.title.toLowerCase().includes(keyword)
+  );
+
+  // 空态：无匹配会话时给出紧凑提示，仍保留原有文案逻辑。
+  if (!visible.length) {
+    elements.sessionList.innerHTML = `<p class="session-empty">${keyword ? "没有匹配的会话" : "暂无会话，点击上方新建"}</p>`;
+    const current0 = state.sessions.find((s) => s.session_id === state.currentSessionId);
+    elements.currentSession.textContent = current0 ? current0.title : "尚未创建会话";
+    return;
+  }
+
+  // 💡 学习提示：按更新时间倒序，再分到「今天 / 近 7 天 / 更早」三个时间桶，仿 ChatGPT 侧边栏排版。
+  const sorted = [...visible].sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const todayTs = startOfToday.getTime() / 1000; // 今天 0 点（秒）
+  const weekTs = todayTs - 6 * 86400; // 近 7 天（含今天）起点
+  const groups = [
+    { label: "今天", items: [] },
+    { label: "近 7 天", items: [] },
+    { label: "更早", items: [] },
+  ];
+  sorted.forEach((session) => {
+    const ts = session.updated_at || session.created_at || 0;
+    if (ts >= todayTs) groups[0].items.push(session);
+    else if (ts >= weekTs) groups[1].items.push(session);
+    else groups[2].items.push(session);
   });
+
+  groups.forEach((group) => {
+    if (!group.items.length) return; // 空分组不渲染标题
+    const label = document.createElement("p");
+    label.className = "session-group-label";
+    label.textContent = group.label;
+    elements.sessionList.appendChild(label);
+    group.items.forEach((session) => {
+      const item = document.createElement("div");
+      item.className = `session-card ${session.session_id === state.currentSessionId ? "active" : ""}`;
+      item.setAttribute("role", "button");
+      item.setAttribute("tabindex", "0");
+      // 两行紧凑样式：主标题 + 副标题（优先真实消息预览，无预览时回退到消息数量）；用户可控文本进 innerHTML 前必须 escapeHtml 防注入。
+      const preview = (session.preview || "").trim() || (session.message_count > 0 ? `${session.message_count} 条消息` : "空会话");
+      item.innerHTML = `<span class="session-copy"><span class="session-title">${escapeHtml(session.title)}</span><span class="session-sub">${escapeHtml(preview)}</span></span><button type="button" class="session-delete" title="删除会话" aria-label="删除会话"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></button>`;
+      item.addEventListener("click", () => selectSession(session.session_id));
+      item.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          selectSession(session.session_id);
+        }
+      });
+      item.querySelector(".session-delete").addEventListener("click", (event) => {
+        event.stopPropagation();
+        deleteSession(session.session_id, item).catch((error) => {
+          item.classList.remove("deleting");
+          setStatus("Error");
+          addMessage("assistant", error.message, "thought");
+        });
+      });
+      elements.sessionList.appendChild(item);
+    });
+  });
+
   const current = state.sessions.find((session) => session.session_id === state.currentSessionId);
   elements.currentSession.textContent = current ? current.title : "尚未创建会话";
 }
@@ -178,7 +287,45 @@ function renderSessions() {
  */
 function renderMessages(messages) {
   elements.chatLog.innerHTML = "";
+  if (!messages.length) {
+    renderWelcome(); // 💡 学习提示：无消息时展示欢迎页 + 建议卡片，替代原本的空白区。
+    return;
+  }
   messages.forEach((message) => addMessage(message.role, message.content));
+}
+
+/**
+ * 渲染空态欢迎页。
+ *
+ * 功能说明：在聊天区居中展示品牌 Logo、问候语和可点击的建议卡片。
+ * 参数说明：无。
+ * 返回值：无，直接写入 #chat-log。
+ * 设计思路：把“不知道能干嘛”的空白页变成“一键上手”的引导页，点击卡片自动切模式并填充输入。
+ * 使用示例：renderWelcome()
+ */
+function renderWelcome() {
+  const cards = SUGGESTIONS.map(
+    (s, i) => `<button class="suggestion-card" data-suggest="${i}">
+      <div class="icon">${s.icon}</div>
+      <div class="title">${escapeHtml(s.title)}</div>
+      <div class="desc">${escapeHtml(s.desc)}</div>
+    </button>`
+  ).join("");
+  elements.chatLog.innerHTML = `<div class="welcome-hero">
+    <div class="brand-logo hero-logo">A</div>
+    <h2>你好，我是 Athena Agent</h2>
+    <p class="subtitle">自研 ReAct 智能体，可对话答疑、编排多 Agent 工作流、排查 K8s 故障与优化云成本。选一个场景开始 👇</p>
+    <div class="suggestion-grid">${cards}</div>
+  </div>`;
+  elements.chatLog.querySelectorAll(".suggestion-card").forEach((card) => {
+    card.addEventListener("click", () => {
+      const item = SUGGESTIONS[Number(card.dataset.suggest)];
+      if (item.cloudMode) setCloudMode(item.cloudMode);
+      else setMode(item.mode);
+      elements.input.value = item.prompt; // 💡 学习提示：只填充不自动发送，给用户二次编辑的机会。
+      elements.input.focus();
+    });
+  });
 }
 
 /**
@@ -191,6 +338,8 @@ function renderMessages(messages) {
  * 使用示例：const bubble = addMessage("assistant", "", "assistant")
  */
 function addMessage(role, content, variant = role) {
+  const hero = elements.chatLog.querySelector(".welcome-hero"); // 💡 学习提示：首次发消息时移除欢迎页，避免与气泡叠加。
+  if (hero) hero.remove();
   const row = document.createElement("div");
   row.className = `message-row ${role === "user" ? "user" : ""}`;
   const bubble = document.createElement("div");
@@ -437,7 +586,7 @@ async function refreshMetrics() {
  * 使用示例：metricCard("成功率", "100%")
  */
 function metricCard(label, value) {
-  return `<div class="trace-item"><div class="text-xs text-[#86909c]">${label}</div><div class="mt-1 text-2xl font-semibold text-[#165dff]">${value}</div></div>`;
+  return `<div class="trace-item"><div class="text-xs text-[#8e8ea0]">${label}</div><div class="mt-1 text-2xl font-semibold text-[#4f46e5]">${value}</div></div>`;
 }
 
 /**
@@ -463,7 +612,7 @@ function renderDetailPanel() {
     return;
   }
   elements.detailPanel.innerHTML = state.traceEvents.map((event) => `<details class="trace-item mb-3" open>
-    <summary class="cursor-pointer text-sm font-semibold text-[#165dff]">#${event.step_index || 0} ${escapeHtml(event.event_type)}</summary>
+    <summary class="cursor-pointer text-sm font-semibold text-[#4f46e5]">#${event.step_index || 0} ${escapeHtml(event.event_type)}</summary>
     <pre class="mt-3">${escapeHtml(formatMaybeJson(event.content))}</pre>
   </details>`).join("");
 }
@@ -499,6 +648,30 @@ function setMode(mode) {
   document.querySelectorAll(".mode-button").forEach((button) => {
     button.classList.toggle("active", button.dataset.mode === mode);
   });
+  // 需求2：同步下拉触发器文字，仅“云运维模式”展开二级子选项，并收起下拉菜单。
+  if (elements.modeCurrent) elements.modeCurrent.textContent = titles[mode];
+  if (elements.cloudPanel) elements.cloudPanel.hidden = mode !== "cloud";
+  elements.modeDropdown?.classList.remove("open");
+  elements.modeTrigger?.setAttribute("aria-expanded", "false");
+}
+
+/**
+ * 切换当前模型。
+ *
+ * 功能说明：更新选中模型的高亮、触发器文字与全局 state，供后续请求扩展使用。
+ * 参数说明：model 是模型标识，如 deepseek-chat。
+ * 返回值：无。
+ * 设计思路：模型选择先落地为前端状态，后端支持按模型路由时再透传，避免破坏现有接口契约。
+ * 使用示例：setModel("gpt-4o")
+ */
+function setModel(model) {
+  state.model = model;
+  if (elements.modelCurrent) elements.modelCurrent.textContent = model;
+  document.querySelectorAll(".model-option").forEach((button) => {
+    button.classList.toggle("active", button.dataset.model === model);
+  });
+  elements.modelDropdown?.classList.remove("open");
+  elements.modelTrigger?.setAttribute("aria-expanded", "false");
 }
 
 /**
@@ -564,8 +737,49 @@ elements.input.addEventListener("keydown", (event) => {
     sendMessage();
   }
 });
+// 💡 学习提示：输入框随内容自动增高，超过上限由 CSS max-height 接管滚动。
+elements.input.addEventListener("input", () => {
+  elements.input.style.height = "auto";
+  elements.input.style.height = `${elements.input.scrollHeight}px`;
+});
+// 💡 学习提示：搜索框输入即时过滤会话列表。
+elements.sessionSearch?.addEventListener("input", renderSessions);
 document.querySelectorAll(".mode-button").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
 document.querySelectorAll(".cloud-mode-button").forEach((button) => button.addEventListener("click", () => setCloudMode(button.dataset.cloudMode)));
+
+// 需求1：侧边栏收起 / 展开。切换 collapsed 类，宽度过渡由 CSS 负责。
+elements.sidebarToggle?.addEventListener("click", () => {
+  const collapsed = elements.sidebar.classList.toggle("collapsed");
+  elements.sidebarToggle.title = collapsed ? "展开侧边栏" : "收起侧边栏";
+  if (collapsed) elements.modeDropdown?.classList.remove("open"); // 收起时顺手关闭下拉，避免残留展开态。
+});
+
+// 需求2：访问模式下拉——点击触发器切换展开。
+elements.modeTrigger?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const open = elements.modeDropdown.classList.toggle("open");
+  elements.modeTrigger.setAttribute("aria-expanded", String(open));
+});
+
+// 需求3：模型选择器——触发器切换 + 选项点击切换模型。
+elements.modelTrigger?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const open = elements.modelDropdown.classList.toggle("open");
+  elements.modelTrigger.setAttribute("aria-expanded", String(open));
+});
+document.querySelectorAll(".model-option").forEach((button) => button.addEventListener("click", () => setModel(button.dataset.model)));
+
+// 💡 学习提示：点击页面空白处关闭所有下拉，符合下拉组件的通用交互预期。
+document.addEventListener("click", (event) => {
+  if (!elements.modeDropdown?.contains(event.target)) {
+    elements.modeDropdown?.classList.remove("open");
+    elements.modeTrigger?.setAttribute("aria-expanded", "false");
+  }
+  if (!elements.modelDropdown?.contains(event.target)) {
+    elements.modelDropdown?.classList.remove("open");
+    elements.modelTrigger?.setAttribute("aria-expanded", "false");
+  }
+});
 document.querySelectorAll(".tab-button").forEach((button) => button.addEventListener("click", () => {
   state.activeTab = button.dataset.tab;
   renderTabs();

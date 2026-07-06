@@ -55,6 +55,23 @@ from athena.tools.builtin.k8s import K8sDiagnoser, K8sOpsTools
 AgentFactory = Callable[[], ReActAgent]
 
 
+def _make_preview(messages: "list", limit: int = 48) -> str:
+    """
+    生成会话列表用的单行预览文本。
+
+    功能说明：取最后一条消息的内容，折叠多余空白并截断到 limit 字符。
+    参数说明：messages 是含 .content 属性的消息列表；limit 是最大字符数。
+    返回值：处理后的单行预览字符串；无消息时返回空串。
+    设计思路：预览只用于侧边栏展示，越短越好，避免换行与超长内容撑破布局。
+    使用示例：_make_preview(session.messages)
+    """
+    if not messages:
+        return ""
+    content = getattr(messages[-1], "content", "") or ""
+    collapsed = " ".join(content.split())  # 折叠换行/连续空白为单空格
+    return collapsed[:limit]
+
+
 class ApiServiceError(Exception):
     """
     API 服务层可预期错误。
@@ -257,6 +274,17 @@ class AthenaWebService:
         """
         self.cleanup_expired_sessions()
         return self._session_detail(self._require_session(session_id))
+
+    def delete_session(self, session_id: str) -> dict[str, str]:
+        """删除一个 Web 会话及其进程内 Agent 缓存。"""
+        self.cleanup_expired_sessions()
+        if self.session_store.get(session_id) is None:
+            raise ApiServiceError(
+                "SESSION_NOT_FOUND", f"Session not found: {session_id}", status_code=404
+            )
+        self.session_store.delete(session_id)
+        self._agents.pop(session_id, None)
+        return {"deleted": session_id}
 
     async def chat(self, session_id: str, message: str) -> ChatResponse:
         """
@@ -1034,6 +1062,7 @@ class AthenaWebService:
             created_at=stored.created_at,
             updated_at=stored.updated_at,
             message_count=len(stored.messages),
+            preview=_make_preview(stored.messages),
         )
 
     def _require_session(self, session_id: str) -> WebSession:
@@ -1062,6 +1091,7 @@ class AthenaWebService:
             created_at=session.created_at,
             updated_at=session.updated_at,
             message_count=len(session.messages),
+            preview=_make_preview(session.messages),
         )
 
     def _session_detail(self, session: WebSession) -> SessionDetail:

@@ -76,6 +76,7 @@ class SessionSummary(BaseModel):
     created_at: float
     updated_at: float
     message_count: int
+    preview: str = ""  # 最后一条消息的单行预览文本，供侧边栏两行会话项展示；无消息时为空串。
 
 
 class SessionDetail(SessionSummary):

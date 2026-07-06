@@ -71,6 +71,22 @@ async def get_session(
     return service.get_session(session_id)
 
 
+@router.delete("/{session_id}")
+async def delete_session(
+    session_id: str, service: AthenaWebService = Depends(get_service)
+) -> dict[str, str]:
+    """
+    删除单个会话。
+
+    功能说明：从会话存储和进程内 Agent 缓存中移除指定会话。
+    参数说明：session_id 来自 URL 路径；service 是注入的服务层。
+    返回值：包含 deleted 字段的轻量确认对象。
+    设计思路：保持 REST 风格，DELETE /api/sessions/{session_id} 专门处理移除。
+    使用示例：DELETE /api/sessions/session-xxx
+    """
+    return service.delete_session(session_id)
+
+
 """
 🤔 思考题：
 

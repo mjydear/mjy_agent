@@ -13,77 +13,131 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" /> <!-- 💡 学习提示：viewport 让页面在手机和桌面都按设备宽度布局。 -->
     <title>Athena Agent Web Console</title>
     <script src="https://cdn.tailwindcss.com"></script> <!-- 💡 学习提示：用 CDN 引入 Tailwind，避免为 MVP 增加 Node.js 构建流程。 -->
-    <link rel="stylesheet" href="/static/style.css?v=20260626-2" />
+    <link rel="stylesheet" href="/static/style.css?v=20260706-13" />
   </head>
-  <body class="min-h-screen bg-[#f7f8fa] text-[#1d2129]">
-    <!-- 🔍 原理讲解：main 是整个控制台的布局容器。小屏幕用 flex-col 垂直堆叠，大屏幕 lg:flex-row 变成三栏。 -->
-    <main class="flex min-h-screen flex-col lg:flex-row">
-      <!-- 💡 学习提示：左侧栏负责“选择上下文”，包括会话和工作模式。 -->
-      <aside class="flex w-full flex-col border-b border-[#e5e6eb] bg-[#f7f8fa] p-4 lg:w-60 lg:border-b-0 lg:border-r">
-        <div class="mb-5">
-          <p class="text-xs uppercase tracking-[0.2em] text-[#86909c]">Athena Agent</p>
-          <h1 class="mt-2 text-2xl font-semibold text-[#1d2129]">Web Console</h1>
-        </div>
-
-        <button id="new-session" class="btn btn-primary mb-4 w-full">
-          新建会话
+  <body class="min-h-screen bg-[#f7f8fb] text-[#1d1d2b]">
+    <!-- 🔍 原理讲解：main 是整个控制台的布局容器。窄屏幕用 flex-col 垂直堆叠，中等以上 md:flex-row 变成三栏。 -->
+    <main class="flex min-h-screen flex-col md:flex-row">
+      <!-- 💡 学习提示：左侧栏负责“选择上下文”，包括会话和工作模式。id=sidebar 供收起/展开切换。 -->
+      <aside id="sidebar" class="app-sidebar collapsed flex w-full flex-col border-b border-[#ececf1] bg-[#fbfbfd] p-2 md:border-b-0 md:border-r">
+        <!-- 💡 学习提示：收起触发按钮位于侧边栏与主区交界，绝对定位在右边缘。 -->
+        <button id="sidebar-toggle" class="sidebar-toggle" title="收起 / 展开侧边栏" aria-label="收起或展开侧边栏">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
         </button>
 
-        <section class="mb-5">
+        <div class="sidebar-head mb-2 flex items-center gap-2">
+          <div class="brand-logo h-9 w-9 flex-shrink-0 text-base font-bold">A</div>
+          <div class="sb-text">
+            <h1 class="text-sm font-semibold leading-tight text-[#1d1d2b]">Athena Agent</h1>
+            <p class="text-[11px] text-[#8e8ea0]">Web Console</p>
+          </div>
+        </div>
+
+        <button id="new-session" class="btn btn-primary new-session-btn mb-1.5 flex items-center gap-2">
+          <svg class="flex-shrink-0" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          <span class="sb-text">新建会话</span>
+        </button>
+
+        <!-- 💡 学习提示：搜索框仅前端过滤会话列表，不额外请求后端。 -->
+        <label class="search-box sb-collapsible mb-2">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <input id="session-search" type="text" placeholder="搜索会话..." autocomplete="off" />
+        </label>
+
+        <!-- 💡 学习提示：访问模式改为下拉层级选择，默认收起，节省侧边栏空间。 -->
+        <section class="sb-collapsible mb-2">
           <h2 class="sidebar-label">访问模式</h2>
-          <div class="grid gap-1" id="mode-picker"> <!-- 💡 学习提示：data-mode 是给 app.js 读取的状态标记，不只是样式。 -->
-            <button data-mode="chat" class="mode-button active">单 Agent 对话</button>
-            <button data-mode="workflow" class="mode-button">多 Agent 工作流</button>
-            <button data-mode="benchmark" class="mode-button">Benchmark 评测</button>
-            <button data-mode="cloud" class="mode-button">云运维模式</button>
+          <div class="dropdown" id="mode-dropdown">
+            <button type="button" class="dropdown-trigger" id="mode-trigger" aria-haspopup="listbox" aria-expanded="false">
+              <span id="mode-current">单 Agent 对话</span>
+              <svg class="dd-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+            <div class="dropdown-menu" id="mode-menu" role="listbox"> <!-- 💡 学习提示：data-mode 是给 app.js 读取的状态标记，保持不变以复用原有逻辑。 -->
+              <button data-mode="chat" class="mode-button active" role="option">单 Agent 对话</button>
+              <button data-mode="workflow" class="mode-button" role="option">多 Agent 工作流</button>
+              <button data-mode="benchmark" class="mode-button" role="option">Benchmark 评测</button>
+              <button data-mode="cloud" class="mode-button" role="option">云运维模式</button>
+            </div>
+          </div>
+
+          <!-- 💡 学习提示：仅当一级选中“云运维模式”时展开二级子选项。 -->
+          <div class="cloud-submenu" id="cloud-mode-panel" hidden>
+            <p class="submenu-label">云运维子模式</p>
+            <div class="cloud-submenu-list">
+              <button data-cloud-mode="k8s" class="cloud-mode-button active">K8s 运维</button>
+              <button data-cloud-mode="resource" class="cloud-mode-button">资源巡检</button>
+              <button data-cloud-mode="fault" class="cloud-mode-button">故障排查</button>
+              <button data-cloud-mode="cost" class="cloud-mode-button">成本优化</button>
+            </div>
           </div>
         </section>
 
-        <section class="mb-5" id="cloud-mode-panel">
-          <h2 class="sidebar-label">云运维子模式</h2>
-          <div class="grid grid-cols-2 gap-2">
-            <button data-cloud-mode="k8s" class="cloud-mode-button active">K8s 运维</button>
-            <button data-cloud-mode="resource" class="cloud-mode-button">资源巡检</button>
-            <button data-cloud-mode="fault" class="cloud-mode-button">故障排查</button>
-            <button data-cloud-mode="cost" class="cloud-mode-button">成本优化</button>
-          </div>
-        </section>
-
-        <section class="min-h-0 flex-1">
+        <section class="sb-collapsible min-h-0 flex-1">
           <h2 class="sidebar-label">会话列表</h2>
-          <div id="session-list" class="grid max-h-96 gap-2 overflow-y-auto pr-1"></div> <!-- 💡 学习提示：空容器由 app.js 动态填充，避免 HTML 写死会话数据。 -->
+          <div id="session-list" class="flex flex-col gap-0.5 overflow-y-auto pr-0.5"></div> <!-- 💡 学习提示：空容器由 app.js 动态填充（含时间分组标题），避免 HTML 写死会话数据。 -->
         </section>
+
+        <!-- 💡 学习提示：底部工具条呼应参考设计，跳转文档 / API / 指标；收起时纵向排列。 -->
+        <div class="sidebar-footer">
+          <a class="foot-btn" href="/docs" target="_blank" title="API 文档">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          </a>
+          <a class="foot-btn" href="/api/metrics/prometheus" target="_blank" title="Prometheus 指标">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+          </a>
+          <a class="foot-btn" href="/healthz" target="_blank" title="健康检查">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+          </a>
+        </div>
       </aside>
 
       <!-- 💡 学习提示：中间主区域负责“执行任务”，类似聊天产品里的主工作台。 -->
       <section class="flex min-h-[70vh] flex-1 flex-col bg-white">
-        <header class="flex-shrink-0 border-b border-[#e5e6eb] px-6 py-4">
+        <header class="flex-shrink-0 border-b border-[#ececf1] px-5 py-3">
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p id="current-session" class="text-sm text-[#86909c]">尚未创建会话</p>
-              <h2 id="mode-title" class="mt-0.5 text-lg font-semibold text-[#1d2129]">单 Agent 对话</h2>
+              <p id="current-session" class="text-sm text-[#8e8ea0]">尚未创建会话</p>
+              <h2 id="mode-title" class="mt-0.5 text-lg font-semibold text-[#1d1d2b]">单 Agent 对话</h2>
             </div>
-            <div id="status-pill" class="status-pill status-pill--ready">Ready</div> <!-- 💡 学习提示：状态徽标让用户知道当前是否正在流式执行。 -->
+            <div class="flex items-center gap-2">
+              <!-- 💡 学习提示：模型选择器 + 内嵌状态指示灯，点击展开可切换模型。 -->
+              <div class="dropdown model-dropdown" id="model-dropdown">
+                <button type="button" class="model-trigger" id="model-trigger" aria-haspopup="listbox" aria-expanded="false">
+                  <span class="dot" id="model-dot"></span>
+                  <span id="model-current">deepseek-chat</span>
+                  <svg class="dd-chevron" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                </button>
+                <div class="dropdown-menu model-menu" id="model-menu" role="listbox">
+                  <button class="model-option active" data-model="deepseek-chat" role="option">deepseek-chat</button>
+                  <button class="model-option" data-model="gpt-4o" role="option">gpt-4o</button>
+                  <button class="model-option" data-model="claude-3-5-sonnet" role="option">claude-3-5-sonnet</button>
+                  <button class="model-option" data-model="qwen-max" role="option">qwen-max</button>
+                </div>
+              </div>
+              <div id="status-pill" class="status-pill status-pill--ready">Ready</div> <!-- 💡 学习提示：状态徽标让用户知道当前是否正在流式执行。 -->
+            </div>
           </div>
         </header>
 
-        <div id="chat-log" class="flex-1 space-y-4 overflow-y-auto p-6"></div> <!-- 💡 学习提示：聊天消息用 JS 添加，方便切换会话时整体重绘。 -->
+        <div id="chat-log" class="flex-1 space-y-4 overflow-y-auto p-5"></div> <!-- 💡 学习提示：聊天消息用 JS 添加，方便切换会话时整体重绘。 -->
 
-        <footer class="flex-shrink-0 border-t border-[#e5e6eb] bg-white p-4">
-          <div class="flex items-end gap-3">
-            <textarea id="message-input" rows="2" class="app-input min-h-[48px] flex-1 resize-none" placeholder="输入任务，Enter 发送，Shift+Enter 换行"></textarea>
-            <div class="flex flex-col gap-2">
-              <button id="send-message" class="btn btn-primary">发送</button>
-              <button id="cancel-stream" class="btn btn-secondary" disabled>取消</button>
-            </div>
+        <footer class="flex-shrink-0 border-t border-[#ececf1] bg-white p-3">
+          <div class="composer">
+            <textarea id="message-input" rows="1" placeholder="输入任务，Enter 发送，Shift+Enter 换行"></textarea>
+            <button id="cancel-stream" class="ghost-btn" disabled title="取消当前流式任务" aria-label="取消">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+            </button>
+            <button id="send-message" class="send-fab" title="发送" aria-label="发送">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg>
+            </button>
           </div>
         </footer>
       </section>
 
-      <!-- 💡 学习提示：右侧栏负责“解释过程”，让 Agent 不只是给答案，也展示为什么这么做。 -->
-      <aside id="detail-aside" class="detail-aside border-t border-[#e5e6eb] bg-[#f7f8fa] lg:border-l lg:border-t-0">
+      <!-- 💡 学习提示：右侧栏负责“解释过程”。默认收起（collapsed），把主区空间留给聊天，需要时点 » 展开。 -->
+      <aside id="detail-aside" class="detail-aside collapsed border-t border-[#ececf1] bg-[#fbfbfd] md:border-l md:border-t-0">
         <div class="detail-header">
-          <button id="toggle-detail" class="toggle-detail-btn" title="折叠 / 展开详情面板" aria-label="折叠或展开详情面板">»</button>
+          <button id="toggle-detail" class="toggle-detail-btn" title="展开详情面板" aria-label="折叠或展开详情面板">«</button>
           <div class="tab-group" id="tab-group">
             <button data-tab="trace" class="tab-button active">对话轨迹</button>
             <button data-tab="metrics" class="tab-button">性能指标</button>
@@ -93,7 +147,7 @@
         <div id="detail-panel" class="detail-panel"></div> <!-- 💡 学习提示：详情面板由 app.js 根据当前 Tab 填充轨迹、指标或报告。 -->
       </aside>
     </main>
-    <script src="/static/app.js?v=20260626-2"></script>
+    <script src="/static/app.js?v=20260706-11"></script>
   </body>
 </html>
 

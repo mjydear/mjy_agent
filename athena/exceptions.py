@@ -15,6 +15,7 @@ class ErrorCode(StrEnum):
     TOOL_EXECUTION_FAILED = "TOOL_EXECUTION_FAILED"
     AGENT_EXECUTION_FAILED = "AGENT_EXECUTION_FAILED"
     VECTOR_STORE_FAILED = "VECTOR_STORE_FAILED"
+    OPS_NAMESPACE_FORBIDDEN = "OPS_NAMESPACE_FORBIDDEN"
 
 
 class AthenaError(Exception):
@@ -54,3 +55,7 @@ class AgentError(AthenaError):
 
 class VectorStoreError(AthenaError):
     """Raised when vector storage operations fail."""
+
+
+class OpsError(AthenaError):
+    """Raised when a cloud-ops (K8s) safety boundary is violated."""

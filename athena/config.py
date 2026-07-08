@@ -165,6 +165,88 @@ class ObservabilitySettings(BaseModel):
     metrics_enabled: bool = True
 
 
+class K8sSettings(BaseModel):
+    """
+    Kubernetes 只读运维连接设置。
+
+    功能说明：保存真实集群接入所需的 kubeconfig、context、命名空间白名单与超时。
+    参数说明：
+        kubeconfig：kubeconfig 文件路径，None 时用 SDK 默认查找（集群内配置或 ~/.kube/config）。
+        context：kubeconfig 中的 context 名称，None 时用当前默认 context。
+        namespace_allowlist：允许访问的命名空间白名单；为空列表表示不限制（本地演示友好）。
+        timeout：单次 K8s API 调用的超时时间（秒），避免慢集群阻塞 Agent。
+    返回值：Pydantic 配置对象。
+    设计思路：把安全边界（白名单）与连接参数集中配置，工具层只消费结论不做散落判断。
+    使用示例：settings.ops.kubernetes.namespace_allowlist
+
+    🎯 面试考点：为什么白名单为空默认放行？答案：与项目其它安全项（api_keys 为空=关闭鉴权）保持一致，
+    本地无集群演示零配置可跑；生产通过配置显式收窄边界。
+    """
+
+    kubeconfig: str | None = None
+    context: str | None = None
+    namespace_allowlist: list[str] = Field(default_factory=list)
+    timeout: float = 10.0  # 单位：秒；真实 SDK 调用的 _request_timeout
+
+
+class PrometheusSettings(BaseModel):
+    """
+    CloudOps Prometheus 查询设置。
+
+    功能说明：保存真实 Prometheus 接入开关、地址与超时；关闭时 K8s 诊断仍正常运行。
+    参数说明：enabled 控制是否查询 Prometheus；base_url 是 Prometheus HTTP API 地址；timeout_seconds 是查询超时。
+    返回值：Pydantic 配置对象。
+    设计思路：默认关闭，保证本地无 Prometheus 时不影响 K8s 只读诊断；演示可用 mock://prometheus 打开确定性指标。
+    使用示例：settings.ops.prometheus.enabled
+    """
+
+    enabled: bool = False
+    base_url: str = "mock://prometheus"
+    timeout_seconds: float = 5.0
+
+
+class OpsSecuritySettings(BaseModel):
+    """CloudOps 写操作安全治理设置。"""
+
+    default_readonly: bool = True
+    allowed_resource_kinds: list[str] = Field(default_factory=lambda: ["Deployment"])
+    allowed_verbs: list[str] = Field(
+        default_factory=lambda: ["rollout_restart", "scale", "pause", "resume"]
+    )
+    blocked_actions: list[str] = Field(
+        default_factory=lambda: [
+            "delete namespace",
+            "delete pvc",
+            "patch secret",
+            "rbac",
+            "batch delete",
+        ]
+    )
+    environments: list[str] = Field(default_factory=lambda: ["dev", "staging", "prod"])
+    prod_write_enabled: bool = False
+
+
+class OpsSettings(BaseModel):
+    """
+    云运维（CloudOps）设置：控制 K8s 诊断走 mock 还是真实集群。
+
+    功能说明：mode 决定数据来源，kubernetes 保存真实接入参数。
+    参数说明：
+        mode：mock 表示始终用演示数据；real 表示优先真实集群，缺 kubeconfig/连接失败自动降级 mock。
+        kubernetes：真实集群连接与安全边界配置。
+    返回值：Pydantic 配置对象。
+    设计思路：新增独立配置段，旧 config.yaml 无 ops 段时用默认值（mock）仍能启动。
+    使用示例：settings.ops.mode
+
+    🎯 面试考点：为什么默认 mock？答案：无集群环境（CI、本地）也能跑通全链路，符合“自动降级”约束。
+    """
+
+    mode: str = "mock"  # mock | real
+    kubernetes: K8sSettings = Field(default_factory=K8sSettings)
+    prometheus: PrometheusSettings = Field(default_factory=PrometheusSettings)
+    security: OpsSecuritySettings = Field(default_factory=OpsSecuritySettings)
+
+
 class AthenaSettings(BaseModel):
     """Top-level Athena settings."""
 
@@ -185,6 +267,9 @@ class AthenaSettings(BaseModel):
     observability: ObservabilitySettings = Field(
         default_factory=ObservabilitySettings
     )
+    ops: OpsSettings = Field(
+        default_factory=OpsSettings
+    )  # 💡 学习提示：云运维配置段，旧 config.yaml 无 ops 段时用默认 mock 模式启动。
 
 
 def load_settings(path: Path | None = None) -> AthenaSettings:
@@ -268,6 +353,46 @@ def _apply_env_overrides(settings: AthenaSettings) -> AthenaSettings:
         if parsed:
             updated.security.api_keys = parsed
             updated.security.require_auth = True
+    # 云运维（K8s）常用环境变量注入，便于容器/CI 不改 YAML 切换 mock/real
+    ops_mode = os.getenv("ATHENA_OPS_MODE")
+    if ops_mode:
+        updated.ops.mode = ops_mode
+    k8s_kubeconfig = os.getenv("ATHENA_OPS_K8S_KUBECONFIG")
+    if k8s_kubeconfig:
+        updated.ops.kubernetes.kubeconfig = k8s_kubeconfig
+    k8s_context = os.getenv("ATHENA_OPS_K8S_CONTEXT")
+    if k8s_context:
+        updated.ops.kubernetes.context = k8s_context
+    k8s_allowlist = os.getenv("ATHENA_OPS_K8S_NAMESPACE_ALLOWLIST")
+    if k8s_allowlist:
+        updated.ops.kubernetes.namespace_allowlist = [
+            ns.strip() for ns in k8s_allowlist.split(",") if ns.strip()
+        ]  # 💡 学习提示：逗号分隔让一个环境变量能配置多个命名空间白名单。
+    k8s_timeout = os.getenv("ATHENA_OPS_K8S_TIMEOUT")
+    if k8s_timeout:
+        updated.ops.kubernetes.timeout = float(k8s_timeout)
+    prometheus_enabled = os.getenv("ATHENA_OPS_PROMETHEUS_ENABLED")
+    if prometheus_enabled:
+        updated.ops.prometheus.enabled = prometheus_enabled.lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    prometheus_base_url = os.getenv("ATHENA_OPS_PROMETHEUS_BASE_URL")
+    if prometheus_base_url:
+        updated.ops.prometheus.base_url = prometheus_base_url
+    prometheus_timeout = os.getenv("ATHENA_OPS_PROMETHEUS_TIMEOUT")
+    if prometheus_timeout:
+        updated.ops.prometheus.timeout_seconds = float(prometheus_timeout)
+    prod_write_enabled = os.getenv("ATHENA_OPS_PROD_WRITE_ENABLED")
+    if prod_write_enabled:
+        updated.ops.security.prod_write_enabled = prod_write_enabled.lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
     return updated
 
 

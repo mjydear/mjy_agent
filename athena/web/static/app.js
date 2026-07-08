@@ -25,6 +25,10 @@ const state = {
   activeTab: "trace",
   latestTaskId: null,
   traceEvents: [],
+  cloudReport: null, // 💡 学习提示：CloudOps K8s 模式返回的结构化 readonly_report，右侧面板优先展示它。
+  cloudStatus: null,
+  cloudAction: null,
+  alertHistory: [],
   benchmarkReport: "",
   model: "deepseek-chat", // 需求3：当前选中模型，供 UI 展示与后续请求扩展。
   abortController: null, // 💡 学习提示：AbortController 是浏览器取消 fetch 流请求的标准方式。
@@ -395,6 +399,9 @@ async function runCloudOps(task, confirmed = false) {
   });
   state.latestTaskId = response.task_id;
   state.traceEvents = response.steps.map((step) => ({ event_type: step.event_type, content: step.content, step_index: step.step_index }));
+  state.cloudReport = response.data?.readonly_report || null;
+  state.cloudStatus = response.data?.cloud_status || null;
+  state.cloudAction = response.data?.k8s_action || null;
   if (response.requires_confirmation) {
     state.pendingCloudConfirmation = { task, mode: state.cloudMode, provider: "aliyun" };
     addCloudConfirmation(response.answer);
@@ -447,6 +454,9 @@ function addCloudConfirmation(message) {
 async function streamChat(message) {
   setStatus("Streaming", true);
   state.traceEvents = [];
+  state.cloudReport = null;
+  state.cloudStatus = null;
+  state.cloudAction = null;
   state.abortController = new AbortController();
   elements.cancel.disabled = false;
   const assistantBubble = addMessage("assistant", "", "assistant");
@@ -528,6 +538,9 @@ async function runWorkflow(task) {
   });
   state.latestTaskId = response.task_id;
   state.traceEvents = response.steps.map((step) => ({ event_type: step.event_type, content: step.content, step_index: step.step_index }));
+  state.cloudReport = null;
+  state.cloudStatus = null;
+  state.cloudAction = null;
   addMessage("assistant", response.answer, "assistant");
   setStatus("Ready");
   renderDetailPanel();
@@ -549,6 +562,9 @@ async function runBenchmark() {
     body: JSON.stringify({ case_set: "web-console" }),
   });
   state.benchmarkReport = response.report;
+  state.cloudReport = null;
+  state.cloudStatus = null;
+  state.cloudAction = null;
   addMessage("assistant", response.report, "assistant");
   setStatus("Ready");
   state.activeTab = "benchmark"; // 💡 学习提示：运行完评测自动切到报告 Tab，用户不需要再手动找结果。
@@ -590,6 +606,131 @@ function metricCard(label, value) {
 }
 
 /**
+ * 渲染 CloudOps 结构化诊断报告。
+ *
+ * 功能说明：把后端 readonly_report 展示成摘要、风险计数、Finding、建议动作和原始证据区块。
+ * 参数说明：report 是 OpsDiagnosisReport 的 JSON 版本。
+ * 返回值：HTML 字符串。
+ * 设计思路：前端不重新推理，只忠实展示后端结构化报告；证据和建议分开展示，方便面试演示“可复核”。
+ * 使用示例：renderCloudReport(state.cloudReport)
+ */
+function renderCloudReport(report) {
+  const metrics = report.metrics || {};
+  const severityCounts = metrics.severity_counts || {};
+  const findings = Array.isArray(report.findings) ? report.findings : [];
+  const actions = Array.isArray(report.actions) ? report.actions : [];
+  const rawEvidence = Array.isArray(report.raw_evidence) ? report.raw_evidence : [];
+  const findingCards = findings.length
+    ? findings.map(renderFindingCard).join("")
+    : `<div class="ops-empty">未发现结构化故障条目。${escapeHtml(report.summary || "证据不足")}</div>`;
+  const actionList = actions.length
+    ? `<ul class="ops-list">${actions.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+    : `<p class="ops-muted">暂无建议动作。</p>`;
+  const evidenceList = rawEvidence.length
+    ? `<pre class="ops-evidence">${escapeHtml(rawEvidence.join("\n"))}</pre>`
+    : `<p class="ops-muted">暂无原始证据。</p>`;
+
+  return `<section class="ops-report">
+    <div class="ops-report-head">
+      <div>
+        <p class="ops-eyebrow">CloudOps 结构化诊断</p>
+        <h3>${escapeHtml(report.namespace || "default")}</h3>
+      </div>
+      <span class="ops-badge">${escapeHtml(metrics.finding_count ?? findings.length)} findings</span>
+    </div>
+    <p class="ops-summary">${escapeHtml(report.summary || "证据不足")}</p>
+    <div class="ops-score-grid">
+      ${opsSeverityCard("高危", severityCounts.high || 0, "high")}
+      ${opsSeverityCard("中危", severityCounts.medium || 0, "medium")}
+      ${opsSeverityCard("低危", severityCounts.low || 0, "low")}
+    </div>
+    <div class="ops-section">
+      <h4>故障条目</h4>
+      ${findingCards}
+    </div>
+    <details class="ops-section" open>
+      <summary>建议动作</summary>
+      ${actionList}
+    </details>
+    <details class="ops-section">
+      <summary>原始证据</summary>
+      ${evidenceList}
+    </details>
+  </section>`;
+}
+
+function renderCloudStatus(status) {
+  if (!status) return "";
+  const prometheus = status.prometheus || {};
+  const prometheusText = prometheus.enabled
+    ? prometheus.available === true
+      ? "available"
+      : prometheus.available === false
+        ? "unavailable"
+        : "enabled"
+    : "disabled";
+  return `<section class="ops-status-grid">
+    <div class="ops-status-card"><span>模式</span><strong>${escapeHtml(status.source || status.mode || "mock")}</strong></div>
+    <div class="ops-status-card"><span>K8s context</span><strong>${escapeHtml(status.k8s_context || "default")}</strong></div>
+    <div class="ops-status-card"><span>Namespace</span><strong>${escapeHtml(status.namespace || "default")}</strong><small>${escapeHtml((status.namespace_scope || ["*"]).join(", "))}</small></div>
+    <div class="ops-status-card"><span>Prometheus</span><strong>${escapeHtml(prometheusText)}</strong><small>${escapeHtml(prometheus.base_url || "-")}</small></div>
+  </section>`;
+}
+
+function renderK8sAction(action) {
+  if (!action) return "";
+  const plan = action.plan || {};
+  const security = action.security || plan.security || {};
+  const risk = plan.risk || "blocked";
+  const status = action.requires_confirmation ? "waiting confirmation" : action.success ? "executed" : "blocked / failed";
+  return `<section class="ops-action-panel">
+    <div class="ops-report-head">
+      <div>
+        <p class="ops-eyebrow">K8s 操作</p>
+        <h3>${escapeHtml(plan.action_type || "未执行")}</h3>
+      </div>
+      <span class="ops-badge ${escapeHtml(risk)}">${escapeHtml(risk)}</span>
+    </div>
+    <div class="ops-finding-body">
+      <div><span class="ops-label">状态</span><p>${escapeHtml(status)}</p></div>
+      <div><span class="ops-label">执行人 / Scope</span><p>${escapeHtml(plan.actor || security.actor || "system")} · ${escapeHtml(plan.required_scope || security.required_scope || "cloud:execute")}</p></div>
+      <div><span class="ops-label">环境 / Namespace</span><p>${escapeHtml(plan.environment || security.environment || "dev")} · ${escapeHtml(plan.namespace || security.namespace || "default")}</p></div>
+      <div><span class="ops-label">命令预览</span><pre>${escapeHtml(plan.command_preview || action.message || "-")}</pre></div>
+      <div><span class="ops-label">结果</span><p>${escapeHtml(action.message || action.error || "-")}</p></div>
+      <div><span class="ops-label">回滚建议</span><p>${escapeHtml(action.rollback_suggestion || plan.rollback_suggestion || "无需回滚或暂无建议")}</p></div>
+    </div>
+  </section>`;
+}
+
+function opsSeverityCard(label, value, tone) {
+  return `<div class="ops-severity ${tone}"><span>${label}</span><strong>${escapeHtml(value)}</strong></div>`;
+}
+
+function renderFindingCard(finding) {
+  const evidence = Array.isArray(finding.evidence) ? finding.evidence : [];
+  const causes = Array.isArray(finding.probable_causes) ? finding.probable_causes : [];
+  const actions = Array.isArray(finding.recommended_actions) ? finding.recommended_actions : [];
+  const title = `${finding.resource_kind || "Resource"}/${finding.resource_name || "unknown"}`;
+  return `<details class="ops-finding ${escapeHtml(finding.severity || "info")}" open>
+    <summary>
+      <span class="ops-finding-title">${escapeHtml(title)}</span>
+      <span class="ops-finding-meta">${escapeHtml(finding.severity || "info")} · ${escapeHtml(finding.symptom || "unknown")}</span>
+    </summary>
+    <div class="ops-finding-body">
+      <div><span class="ops-label">命名空间</span><p>${escapeHtml(finding.namespace || "-")}</p></div>
+      <div><span class="ops-label">根因候选</span>${renderInlineList(causes, "证据不足")}</div>
+      <div><span class="ops-label">建议动作</span>${renderInlineList(actions, "暂无建议")}</div>
+      <div><span class="ops-label">证据</span>${renderInlineList(evidence, "暂无证据")}</div>
+    </div>
+  </details>`;
+}
+
+function renderInlineList(items, emptyText) {
+  if (!items.length) return `<p class="ops-muted">${escapeHtml(emptyText)}</p>`;
+  return `<ul class="ops-list compact">${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+}
+
+/**
  * 渲染右侧详情面板。
  *
  * 功能说明：根据 activeTab 展示轨迹、指标或 Benchmark 报告。
@@ -603,6 +744,10 @@ function renderDetailPanel() {
     refreshMetrics();
     return;
   }
+  if (state.activeTab === "alerts") {
+    refreshAlertHistory();
+    return;
+  }
   if (state.activeTab === "benchmark") {
     elements.detailPanel.innerHTML = state.benchmarkReport ? `<pre>${escapeHtml(state.benchmarkReport)}</pre>` : `<p class="text-sm text-[#86909c]">尚未运行 Benchmark。</p>`;
     return;
@@ -611,10 +756,52 @@ function renderDetailPanel() {
     elements.detailPanel.innerHTML = `<p class="text-sm text-[#86909c]">当前任务还没有轨迹。</p>`;
     return;
   }
-  elements.detailPanel.innerHTML = state.traceEvents.map((event) => `<details class="trace-item mb-3" open>
+  const traceHtml = state.traceEvents.map((event) => `<details class="trace-item mb-3" open>
     <summary class="cursor-pointer text-sm font-semibold text-[#4f46e5]">#${event.step_index || 0} ${escapeHtml(event.event_type)}</summary>
     <pre class="mt-3">${escapeHtml(formatMaybeJson(event.content))}</pre>
   </details>`).join("");
+  const cloudHtml = `${renderCloudStatus(state.cloudStatus)}${renderK8sAction(state.cloudAction)}${state.cloudReport ? renderCloudReport(state.cloudReport) : ""}`;
+  elements.detailPanel.innerHTML = cloudHtml
+    ? `${cloudHtml}<div class="ops-trace-separator">执行轨迹</div>${traceHtml}`
+    : traceHtml;
+}
+
+async function refreshAlertHistory() {
+  elements.detailPanel.innerHTML = `<p class="text-sm text-[#86909c]">正在加载告警记录...</p>`;
+  const data = await api("/api/alerts/history?limit=20");
+  state.alertHistory = Array.isArray(data.items) ? data.items : [];
+  elements.detailPanel.innerHTML = renderAlertHistory(state.alertHistory);
+}
+
+function renderAlertHistory(items) {
+  if (!items.length) {
+    return `<p class="text-sm text-[#86909c]">暂无告警处理记录。</p>`;
+  }
+  return `<section class="ops-report">
+    <div class="ops-report-head">
+      <div>
+        <p class="ops-eyebrow">Alertmanager</p>
+        <h3>告警处理记录</h3>
+      </div>
+      <span class="ops-badge">${escapeHtml(items.length)} items</span>
+    </div>
+    ${items.map(renderAlertRecord).join("")}
+  </section>`;
+}
+
+function renderAlertRecord(item) {
+  const report = item.readonly_report || {};
+  const findingCount = report.metrics?.finding_count ?? (Array.isArray(report.findings) ? report.findings.length : 0);
+  return `<details class="ops-section" open>
+    <summary>${escapeHtml(item.alert_name || "unknown")} · ${escapeHtml(item.severity || "warning")}</summary>
+    <div class="ops-finding-body">
+      <div><span class="ops-label">命名空间</span><p>${escapeHtml(item.namespace || "default")}</p></div>
+      <div><span class="ops-label">Playbook</span><p>${escapeHtml(item.playbook || "-")}</p></div>
+      <div><span class="ops-label">诊断任务</span><p>${escapeHtml(item.diagnosis_task || "-")}</p></div>
+      <div><span class="ops-label">处理结果</span><p>${escapeHtml(item.status || "processed")} · ${escapeHtml(findingCount)} findings</p></div>
+      <div><span class="ops-label">摘要</span><p>${escapeHtml(item.summary || report.summary || "-")}</p></div>
+    </div>
+  </details>`;
 }
 
 /**

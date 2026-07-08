@@ -28,6 +28,11 @@ class AlertWebhookPayload:
 
     alert_name: str
     severity: str = "warning"
+    namespace: str = "default"
+    pod: str = ""
+    deployment: str = ""
+    summary: str = ""
+    description: str = ""
     labels: dict[str, JSONValue] = field(default_factory=dict)
     annotations: dict[str, JSONValue] = field(default_factory=dict)
 
@@ -75,9 +80,21 @@ class AlertWebhookParser:
             labels.get("alertname", payload.get("alert_name", "KubePodCrashLooping"))
         )
         severity = str(labels.get("severity", "warning"))
+        namespace = str(labels.get("namespace", payload.get("namespace", "default")))
+        pod = str(labels.get("pod", payload.get("pod", "")))
+        deployment = str(labels.get("deployment", payload.get("deployment", "")))
+        summary = str(annotations.get("summary", payload.get("summary", "")))
+        description = str(
+            annotations.get("description", payload.get("description", ""))
+        )
         return AlertWebhookPayload(
             alert_name=alert_name,
             severity=severity,
+            namespace=namespace,
+            pod=pod,
+            deployment=deployment,
+            summary=summary,
+            description=description,
             labels=labels,
             annotations=annotations,
         )

@@ -51,6 +51,12 @@ from athena.tools.builtin.cloud import (
     TencentCloudClient,
 )
 from athena.tools.builtin.k8s import K8sDiagnoser, K8sOpsTools
+from athena.tools.cloud.k8s import (
+    EvidenceBoundReportSummarizer,
+    K8sActionSecurityPolicy,
+    K8sReadOnlyDiagnoser,
+    K8sWriteActionExecutor,
+)
 
 AgentFactory = Callable[[], ReActAgent]
 
@@ -183,6 +189,7 @@ class AthenaWebService:
         metrics_store: "MetricsStore | None" = None,
         benchmark_store: "BenchmarkStore | None" = None,
         audit_store: "object | None" = None,
+        k8s_diagnoser: "K8sReadOnlyDiagnoser | None" = None,
     ) -> None:
         if session_ttl_seconds <= 0:
             raise ValueError("session_ttl_seconds must be positive")
@@ -224,6 +231,10 @@ class AthenaWebService:
         self.workflow_llm = workflow_llm
         # 评测嵌入：注入后 Benchmark 走语义评分，缺失则关键词匹配
         self.embedding_provider = embedding_provider
+        # K8s 只读诊断器：注入优先，否则惰性从 settings.ops 构建（mock/real 由配置决定，
+        # 连不上真实集群自动降级 mock）。惰性构建避免无 K8s 场景也读配置。
+        self._k8s_diagnoser = k8s_diagnoser
+        self._alert_history: list[dict[str, object]] = []
 
     def create_session(self, title: str | None = None) -> SessionDetail:
         """
@@ -552,22 +563,83 @@ class AthenaWebService:
         return store.verify_chain()
 
     def ingest_alert(self, payload: dict[str, object]) -> dict[str, object]:
-        """接收 Alertmanager webhook，标准化并写入审计链。"""
+        """接收 Alertmanager webhook，转换为 CloudOps 诊断任务并写入审计链。"""
         from athena.integration.alert_webhook import AlertWebhookParser
 
         alert = AlertWebhookParser().parse(payload)
+        diagnoser = self._get_k8s_readonly_diagnoser()
+        namespace = self._parse_k8s_namespace(
+            f"namespace={alert.namespace}", diagnoser.client.namespace_allowlist
+        )
+        playbook = self._select_alert_playbook(alert.alert_name, alert.labels)
+        diagnosis_task = self._alert_diagnosis_task(alert.alert_name, namespace)
+        report = diagnoser.build_report(namespace, include_logs=True)
+        workflow = FaultDiagnoseWorkflow(knowledge=self.ops_knowledge).run(
+            alert.alert_name
+        )
+        workflow_payload = {
+            "run_id": workflow.run_id,
+            "status": workflow.status,
+            "summary": workflow.summary,
+            "knowledge_id": workflow.knowledge_id,
+            "steps": [step.__dict__ for step in workflow.steps],
+        }
+        record: dict[str, object] = {
+            "status": "processed",
+            "alert_name": alert.alert_name,
+            "severity": alert.severity,
+            "namespace": namespace,
+            "pod": alert.pod,
+            "deployment": alert.deployment,
+            "summary": alert.summary,
+            "description": alert.description,
+            "playbook": playbook,
+            "diagnosis_task": diagnosis_task,
+            "readonly_report": report.to_dict(),
+            "workflow": workflow_payload,
+        }
+        self._alert_history.insert(0, record)
+        self._alert_history = self._alert_history[:50]
         self._audit(
             "alertmanager",
             "alert.received",
             alert.alert_name,
             alert.severity != "critical",
-            f"severity={alert.severity}",
+            f"severity={alert.severity};namespace={namespace};playbook={playbook}",
         )
-        return {
-            "status": "accepted",
-            "alert_name": alert.alert_name,
-            "severity": alert.severity,
-        }
+        self._audit(
+            "alertmanager",
+            "alert.processed",
+            alert.alert_name,
+            True,
+            f"findings={len(report.findings)};workflow={workflow.run_id}",
+        )
+        return record
+
+    def list_alert_history(self, limit: int = 20) -> list[dict[str, object]]:
+        """返回最近的 Alertmanager 告警处理记录。"""
+        return self._alert_history[: max(1, min(limit, 50))]
+
+    @staticmethod
+    def _select_alert_playbook(alert_name: str, labels: dict[str, object]) -> str:
+        """根据告警名和标签选择最接近的 K8s Playbook。"""
+        text = " ".join([alert_name, *(str(value) for value in labels.values())]).lower()
+        if "crashloop" in text or "restart" in text:
+            return "CrashLoopBackOff"
+        if "imagepull" in text or "errimagepull" in text:
+            return "ImagePullBackOff"
+        if "pending" in text or "schedul" in text:
+            return "Pod Pending"
+        if "service" in text or "endpoint" in text or "5xx" in text:
+            return "Service unreachable"
+        if "cpu" in text or "memory" in text or "oom" in text:
+            return "CPU / Memory abnormal"
+        return "K8s namespace diagnosis"
+
+    @staticmethod
+    def _alert_diagnosis_task(alert_name: str, namespace: str) -> str:
+        """把告警转换成可复用的诊断任务文本。"""
+        return f"诊断 {namespace} 命名空间告警 {alert_name}"
 
     async def run_benchmark(
         self, case_set: str = "default", actor: str = "system"
@@ -684,14 +756,21 @@ class AthenaWebService:
         self.task_store.save(record)
         try:
             answer, steps, data, requires_confirmation = self._dispatch_cloud_ops(
-                mode, task, provider, confirmed
+                mode, task, provider, confirmed, actor
+            )
+            operation_success = self._cloud_operation_success(
+                data, requires_confirmation
             )
             self.metrics.record_task(
-                success=not requires_confirmation,
+                success=operation_success,
                 duration_seconds=time.perf_counter() - started_at,
             )  # 💡 学习提示：等待人工确认不算真正成功，否则成功率会被高估。
             record.status = (
-                "waiting_confirmation" if requires_confirmation else "success"
+                "waiting_confirmation"
+                if requires_confirmation
+                else "success"
+                if operation_success
+                else "failed"
             )  # 💡 学习提示：前端靠这个状态判断当前任务是完成还是等用户确认。
             record.answer = answer
             record.steps = steps
@@ -701,7 +780,7 @@ class AthenaWebService:
                 actor,
                 f"cloud_ops.{mode}",
                 task_id,
-                not requires_confirmation,
+                operation_success,
                 f"provider={provider};confirmed={confirmed}",
             )
             return CloudOpsResponse(
@@ -717,6 +796,19 @@ class AthenaWebService:
             self._record_failure(record, exc, started_at)
             self._audit(actor, f"cloud_ops.{mode}", task_id, False, str(exc))
             raise ApiServiceError("CLOUD_OPS_FAILED", str(exc)) from exc
+
+    @staticmethod
+    def _cloud_operation_success(
+        data: dict[str, object], requires_confirmation: bool
+    ) -> bool:
+        """根据 CloudOps 数据里的操作结果判断任务是否真正成功。"""
+        if requires_confirmation:
+            return False
+        for key in ("k8s_action", "operation"):
+            operation = data.get(key)
+            if isinstance(operation, dict) and "success" in operation:
+                return bool(operation["success"])
+        return True
 
     async def stream_cloud_ops(
         self,
@@ -777,7 +869,7 @@ class AthenaWebService:
         return {"query": query, "items": [item.__dict__ for item in items]}
 
     def _dispatch_cloud_ops(
-        self, mode: str, task: str, provider: str, confirmed: bool
+        self, mode: str, task: str, provider: str, confirmed: bool, actor: str = "system"
     ) -> tuple[str, list[StepTrace], dict[str, object], bool]:
         """
         根据 mode 分发到具体 CloudOps 子场景。
@@ -789,7 +881,7 @@ class AthenaWebService:
         使用示例：self._dispatch_cloud_ops("k8s", "", "aliyun", False)
         """
         if mode == "k8s":
-            return self._run_k8s_ops()
+            return self._run_k8s_ops(task, confirmed, actor)
         if mode == "resource":
             return self._run_resource_ops(task, provider, confirmed)
         if mode == "fault":
@@ -800,15 +892,73 @@ class AthenaWebService:
             "CLOUD_MODE_UNSUPPORTED", f"Unsupported cloud ops mode: {mode}"
         )
 
-    def _run_k8s_ops(self) -> tuple[str, list[StepTrace], dict[str, object], bool]:
+    def _get_k8s_readonly_diagnoser(self) -> K8sReadOnlyDiagnoser:
+        """
+        惰性获取 K8s 只读诊断器。
+
+        功能说明：优先返回注入实例，否则按 settings.ops 构建（mock/real 由配置决定）。
+        参数说明：无。
+        返回值：K8sReadOnlyDiagnoser。
+        设计思路：惰性 + 缓存，避免每次巡检重复读配置；真实集群不可达时客户端会自动降级 mock。
+        使用示例：diagnoser = self._get_k8s_readonly_diagnoser()
+        """
+        if self._k8s_diagnoser is None:
+            from athena.config import load_settings
+
+            self._k8s_diagnoser = K8sReadOnlyDiagnoser.from_settings(load_settings())
+        return self._k8s_diagnoser
+
+    @staticmethod
+    def _parse_k8s_namespace(task: str, allowlist: tuple[str, ...]) -> str:
+        """
+        从自然语言任务中解析目标命名空间。
+
+        功能说明：识别 `namespace=xxx`、`ns xxx`、`诊断 xxx 命名空间` 或白名单内出现的命名空间词，
+            解析不到时回退 default；若白名单非空且解析结果越权，则回退到白名单内的安全默认值。
+        参数说明：task 用户输入文本；allowlist 命名空间白名单（空表示不限制）。
+        返回值：合法的命名空间字符串。
+        设计思路：Web 输入是自由文本，解析层做“尽力识别 + 安全兜底”，越权不直接抛错而是回退，
+            保证演示流程不因一句话措辞卡死；真正的安全边界仍由客户端白名单校验兜底。
+        使用示例：AthenaWebService._parse_k8s_namespace("诊断 prod 命名空间", ("default", "prod"))
+        """
+        import re
+
+        text = (task or "").strip()
+        parsed = "default"
+        if text:
+            patterns = (
+                r"namespace[=:\s]+([a-z0-9][a-z0-9\-]*)",
+                r"\bns[=:\s]+([a-z0-9][a-z0-9\-]*)",
+                r"([a-z0-9][a-z0-9\-]*)\s*命名空间",
+            )
+            for pattern in patterns:
+                match = re.search(pattern, text, flags=re.IGNORECASE)
+                if match:
+                    parsed = match.group(1).lower()
+                    break
+            else:
+                # 未命中显式模式：若某个白名单命名空间在文本中出现，优先采用
+                for candidate in allowlist:
+                    if candidate and candidate.lower() in text.lower():
+                        parsed = candidate
+                        break
+
+        if allowlist and parsed not in allowlist:
+            # 越权解析结果安全兜底：优先 default，否则用白名单首项
+            return "default" if "default" in allowlist else allowlist[0]
+        return parsed
+
+    def _run_k8s_ops(
+        self, task: str = "", confirmed: bool = False, actor: str = "system"
+    ) -> tuple[str, list[StepTrace], dict[str, object], bool]:
         """
         执行 K8s 运维巡检场景。
 
-        功能说明：收集集群快照，运行 K8s 诊断器，并生成前端轨迹步骤。
-        参数说明：无，当前使用 Mock K8sOpsTools。
+        功能说明：收集集群快照，运行 K8s 诊断器，解析目标命名空间并输出结构化诊断报告。
+        参数说明：task 用户输入文本，用于解析目标命名空间（缺省诊断 default）。
         返回值：answer、steps、data、requires_confirmation=False。
-        设计思路：K8s 巡检是只读场景，不需要人工确认，但要把诊断结果结构化返回。
-        使用示例：answer, steps, data, confirm = self._run_k8s_ops()
+        设计思路：K8s 巡检是只读场景，不需要人工确认，但要把诊断结果结构化返回（阶段 2 报告模型）。
+        使用示例：answer, steps, data, confirm = self._run_k8s_ops("诊断 prod 命名空间")
         """
         tools = K8sOpsTools()
         diagnoser = K8sDiagnoser(tools.client)
@@ -816,11 +966,87 @@ class AthenaWebService:
         diagnoses = [
             diagnosis.__dict__ for diagnosis in diagnoser.diagnose_pods()
         ]  # 💡 学习提示：把 dataclass 转 dict，FastAPI/前端才能直接 JSON 化。
+        # 只读诊断器：基于 settings.ops 的 mock/real 客户端做证据聚合诊断（含事件+日志）。
+        readonly_diagnoser = self._get_k8s_readonly_diagnoser()
+        namespace = self._parse_k8s_namespace(
+            task, readonly_diagnoser.client.namespace_allowlist
+        )
+        cloud_status = self._k8s_cloud_status(readonly_diagnoser, namespace)
+        from athena.config import load_settings
+
+        action_executor = K8sWriteActionExecutor(
+            readonly_diagnoser.client,
+            K8sActionSecurityPolicy.from_settings(load_settings().ops.security),
+            actor=actor,
+        )
+        action_preview = action_executor.preview(task, namespace)
+        if action_preview is not None:
+            if action_preview.requires_confirmation and action_preview.plan is not None and confirmed:
+                action_result = action_executor.execute(action_preview.plan)
+                steps = [
+                    StepTrace(
+                        step_index=1,
+                        event_type="preview",
+                        content=action_preview.plan.command_preview,
+                    ),
+                    StepTrace(
+                        step_index=2,
+                        event_type="execute",
+                        content=action_result.message,
+                    ),
+                    StepTrace(
+                        step_index=3,
+                        event_type="verify",
+                        content="Read deployment state after write action",
+                    ),
+                ]
+                return (
+                    action_result.message,
+                    steps,
+                    {
+                        "cloud_status": cloud_status,
+                        "k8s_action": action_result.to_dict(),
+                    },
+                    False,
+                )
+            steps = [
+                StepTrace(
+                    step_index=1,
+                    event_type="preview",
+                    content=(
+                        action_preview.plan.command_preview
+                        if action_preview.plan is not None
+                        else action_preview.message
+                    ),
+                ),
+                StepTrace(
+                    step_index=2,
+                    event_type="safety",
+                    content=action_preview.message,
+                ),
+            ]
+            return (
+                action_preview.message,
+                steps,
+                {
+                    "cloud_status": cloud_status,
+                    "k8s_action": action_preview.to_dict(),
+                },
+                action_preview.requires_confirmation,
+            )
+
+        readonly_findings = readonly_diagnoser.as_dicts(namespace, include_logs=True)
+        # 阶段 2：结构化诊断报告（summary/metrics/actions/raw_evidence），供前端分区展示。
+        report = readonly_diagnoser.build_report(namespace, include_logs=True)
+        readonly_report = report.to_dict()
         steps = [
             StepTrace(
                 step_index=1,
                 event_type="collect",
-                content="Collected pod, node, event, and usage snapshot",
+                content=(
+                    f"Collected pod, node, event, and usage snapshot "
+                    f"for namespace={namespace}"
+                ),
             ),
             StepTrace(
                 step_index=2,
@@ -829,12 +1055,61 @@ class AthenaWebService:
             ),
             StepTrace(
                 step_index=3,
+                event_type="analyze",
+                content=(
+                    f"Read-only diagnoser produced {len(readonly_findings)} "
+                    "evidence-backed findings"
+                ),
+            ),
+            StepTrace(
+                step_index=4,
                 event_type="recommend",
                 content="Prioritize CrashLoopBackOff logs and ImagePullBackOff registry checks",
             ),
         ]
-        answer = f"K8s 巡检完成：发现 {len(diagnoses)} 个需要关注的问题。"
-        return answer, steps, {"snapshot": snapshot, "diagnoses": diagnoses}, False
+        answer = EvidenceBoundReportSummarizer.deterministic_summary(report)
+        return (
+            answer,
+            steps,
+            {
+                "namespace": namespace,
+                "cloud_status": self._k8s_cloud_status(readonly_diagnoser, namespace, readonly_report),
+                "snapshot": snapshot,
+                "diagnoses": diagnoses,
+                "readonly_findings": readonly_findings,
+                "readonly_report": readonly_report,
+            },
+            False,
+        )
+
+    @staticmethod
+    def _k8s_cloud_status(
+        diagnoser: K8sReadOnlyDiagnoser,
+        namespace: str,
+        report: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        """返回 Web Console 展示所需的 CloudOps 连接状态。"""
+        client = diagnoser.client
+        prometheus = diagnoser.prometheus
+        metrics = report.get("metrics", {}) if report else {}
+        prometheus_available = (
+            metrics.get("prometheus_available")
+            if isinstance(metrics, dict) and "prometheus_available" in metrics
+            else None
+        )
+        namespace_scope = list(client.namespace_allowlist) or ["*"]
+        return {
+            "mode": client.mode,
+            "source": "real" if client.mode == "real" else "mock",
+            "k8s_context": client.context or "default",
+            "namespace": namespace,
+            "namespace_scope": namespace_scope,
+            "prometheus": {
+                "enabled": prometheus.enabled,
+                "base_url": prometheus.base_url,
+                "available": prometheus_available,
+            },
+        }
 
     def _run_resource_ops(
         self, task: str, provider: str, confirmed: bool

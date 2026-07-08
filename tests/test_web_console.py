@@ -119,6 +119,46 @@ def test_web_console_root_and_session_chat() -> None:
     assert metrics_response.json()["total_tasks"] == 1
 
 
+def test_web_console_static_assets_include_cloud_ops_report_renderer() -> None:
+    """
+    验证 Web 控制台静态资源包含 CloudOps 结构化报告渲染能力。
+
+    功能说明：请求 index/app.js/style.css，确认页面引用新静态资源版本，脚本与样式包含 readonly_report 展示入口。
+    参数说明：无。
+    返回值：None。
+    设计思路：项目当前没有浏览器端测试框架，用 TestClient 做静态资源冒烟，避免引入前端构建链。
+    使用示例：pytest tests/test_web_console.py -k static_assets
+    """
+    client = build_client()
+
+    root = client.get("/")
+    assert root.status_code == 200
+    assert "/static/app.js?v=20260708-03" in root.text
+    assert "/static/style.css?v=20260708-02" in root.text
+    assert "data-tab=\"alerts\"" in root.text
+
+    script = client.get("/static/app.js?v=20260708-03")
+    assert script.status_code == 200
+    assert "cloudReport" in script.text
+    assert "cloudStatus" in script.text
+    assert "cloudAction" in script.text
+    assert "alertHistory" in script.text
+    assert "renderCloudReport" in script.text
+    assert "renderCloudStatus" in script.text
+    assert "renderK8sAction" in script.text
+    assert "renderAlertHistory" in script.text
+    assert "readonly_report" in script.text
+    assert "cloud_status" in script.text
+    assert "rollback_suggestion" in script.text
+
+    style = client.get("/static/style.css?v=20260708-02")
+    assert style.status_code == 200
+    assert ".ops-report" in style.text
+    assert ".ops-finding" in style.text
+    assert ".ops-status-grid" in style.text
+    assert ".ops-action-panel" in style.text
+
+
 def test_workflow_and_benchmark_routes() -> None:
     """
     验证工作流、轨迹和 Benchmark 接口。
@@ -145,6 +185,41 @@ def test_workflow_and_benchmark_routes() -> None:
     run_id = benchmark_response.json()["run_id"]
     assert (
         "Success Rate" in client.get(f"/api/benchmark/{run_id}/report").json()["report"]
+    )
+
+
+def test_web_console_delete_session_does_not_regress() -> None:
+    """
+    验证删除会话功能：创建后删除，会话从列表消失且再次访问返回 404。
+
+    功能说明：覆盖 Stage 10「删除会话功能不回归」验收项，防止云运维改动破坏基础会话管理。
+    参数说明：无。
+    返回值：None。
+    设计思路：删除是不可逆操作，必须验证删除确认、列表移除与重复删除的清晰错误。
+    使用示例：pytest tests/test_web_console.py -k delete_session
+    """
+    client = build_client()
+
+    session_id = client.post("/api/sessions", json={"title": "to-delete"}).json()[
+        "session"
+    ]["session_id"]
+
+    # 删除前会话存在于列表中
+    before = client.get("/api/sessions").json()
+    assert any(item["session_id"] == session_id for item in before)
+
+    delete_response = client.request("DELETE", f"/api/sessions/{session_id}")
+    assert delete_response.status_code == 200
+    assert delete_response.json()["deleted"] == session_id
+
+    # 删除后列表不再包含该会话，且详情查询返回错误状态（会话不存在）
+    after = client.get("/api/sessions").json()
+    assert all(item["session_id"] != session_id for item in after)
+    assert client.get(f"/api/sessions/{session_id}").status_code >= 400
+
+    # 重复删除返回清晰的 404，而不是静默成功
+    assert (
+        client.request("DELETE", f"/api/sessions/{session_id}").status_code == 404
     )
 
 

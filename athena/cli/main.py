@@ -49,6 +49,7 @@ from athena.memory import WorkingMemory
 from athena.prompt import ContextAssembler
 from athena.tools import ToolRegistry
 from athena.tools.builtin.basic import register_basic_tools
+from athena.tools.cloud.k8s import register_k8s_readonly_tools
 
 # 💡 学习提示：typer.Typer() 创建 CLI 应用实例，help 参数会显示在 `athena --help` 里
 # 这个 app 对象扮演"命令注册表"的角色，后面的 @app.command() 都是注册进它里面的
@@ -107,6 +108,9 @@ def build_agent(config_path: Path | None = None) -> ReActAgent:
     register_basic_tools(
         registry
     )  # 💡 学习提示：注册内置工具（echo、current_utc_time），更多工具也在这里加
+    register_k8s_readonly_tools(
+        registry, settings=settings
+    )  # 💡 学习提示：注册 K8s 只读诊断工具，按 settings.ops 走 mock/real，缺集群自动降级
 
     llm_client = LLMClientFactory.create(
         provider=settings.llm.provider,

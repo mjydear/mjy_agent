@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 
 from athena.api.routes._deps import get_service
 from athena.api.services import AthenaWebService
@@ -32,3 +32,12 @@ async def receive_alert(
     """
     payload = await request.json()
     return service.ingest_alert(payload)
+
+
+@router.get("/history")
+async def alert_history(
+    limit: int = Query(default=20, ge=1, le=50),
+    service: AthenaWebService = Depends(get_service),
+) -> dict[str, object]:
+    """返回最近的 Alertmanager 告警处理记录。"""
+    return {"items": service.list_alert_history(limit)}

@@ -588,6 +588,241 @@ details.trace-item > summary::-webkit-details-marker {
   display: none;
 }
 
+/* ============================================================
+   📌 CloudOps 结构化诊断报告
+   ============================================================ */
+.ops-report {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.ops-report-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+}
+.ops-eyebrow {
+  margin: 0 0 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.ops-report h3,
+.ops-report h4,
+.ops-report p {
+  margin: 0;
+}
+.ops-report h3 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+.ops-badge {
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.ops-badge.low {
+  background: #ecfdf3;
+  color: var(--color-success);
+}
+.ops-badge.blocked {
+  background: #fff1f2;
+  color: var(--color-danger);
+}
+.ops-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.ops-status-card,
+.ops-action-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+}
+.ops-status-card span,
+.ops-status-card small {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.ops-status-card strong {
+  display: block;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+  font-size: 15px;
+  color: var(--text);
+}
+.ops-action-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.ops-summary,
+.ops-empty {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 10px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+}
+.ops-score-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.ops-severity {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px;
+}
+.ops-severity span {
+  display: block;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.ops-severity strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 22px;
+  line-height: 1.1;
+}
+.ops-severity.high strong {
+  color: var(--color-danger);
+}
+.ops-severity.medium strong {
+  color: var(--color-warning);
+}
+.ops-severity.low strong {
+  color: var(--color-success);
+}
+.ops-section {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+}
+.ops-section > summary,
+.ops-section h4 {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+.ops-section h4 {
+  cursor: default;
+  margin-bottom: 8px;
+}
+.ops-finding {
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: 8px;
+  background: #fff;
+  padding: 9px;
+}
+.ops-finding + .ops-finding {
+  margin-top: 8px;
+}
+.ops-finding.high {
+  border-left-color: var(--color-danger);
+}
+.ops-finding.medium {
+  border-left-color: var(--color-warning);
+}
+.ops-finding.low,
+.ops-finding.info {
+  border-left-color: var(--color-success);
+}
+.ops-finding summary {
+  list-style: none;
+  cursor: pointer;
+}
+.ops-finding summary::-webkit-details-marker {
+  display: none;
+}
+.ops-finding-title,
+.ops-finding-meta {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.ops-finding-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+.ops-finding-meta {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.ops-finding-body {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+.ops-label {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+.ops-list {
+  margin: 8px 0 0;
+  padding-left: 17px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+}
+.ops-list.compact {
+  margin-top: 0;
+}
+.ops-list li {
+  overflow-wrap: anywhere;
+}
+.ops-muted {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.ops-evidence {
+  margin-top: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ops-trace-separator {
+  margin: 12px 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 720px) {
+  .ops-status-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 pre {
   overflow-x: auto; /* 💡 学习提示：JSON/代码可能很长，横向滚动比强行换行更不容易破坏结构。 */
   border-radius: 6px;

@@ -13,7 +13,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" /> <!-- 💡 学习提示：viewport 让页面在手机和桌面都按设备宽度布局。 -->
     <title>Athena Agent Web Console</title>
     <script src="https://cdn.tailwindcss.com"></script> <!-- 💡 学习提示：用 CDN 引入 Tailwind，避免为 MVP 增加 Node.js 构建流程。 -->
-    <link rel="stylesheet" href="/static/style.css?v=20260706-13" />
+    <link rel="stylesheet" href="/static/style.css?v=20260708-02" />
   </head>
   <body class="min-h-screen bg-[#f7f8fb] text-[#1d1d2b]">
     <!-- 🔍 原理讲解：main 是整个控制台的布局容器。窄屏幕用 flex-col 垂直堆叠，中等以上 md:flex-row 变成三栏。 -->
@@ -141,13 +141,14 @@
           <div class="tab-group" id="tab-group">
             <button data-tab="trace" class="tab-button active">对话轨迹</button>
             <button data-tab="metrics" class="tab-button">性能指标</button>
+            <button data-tab="alerts" class="tab-button">告警记录</button>
             <button data-tab="benchmark" class="tab-button">Benchmark</button>
           </div>
         </div>
         <div id="detail-panel" class="detail-panel"></div> <!-- 💡 学习提示：详情面板由 app.js 根据当前 Tab 填充轨迹、指标或报告。 -->
       </aside>
     </main>
-    <script src="/static/app.js?v=20260706-11"></script>
+    <script src="/static/app.js?v=20260708-03"></script>
   </body>
 </html>
 

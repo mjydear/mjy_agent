@@ -7,5 +7,10 @@
 """
 
 from athena.tools.cloud.prometheus import PrometheusQueryClient, PrometheusQueryResult
+from athena.tools.cloud.prometheus_tools import register_prometheus_tools
 
-__all__ = ["PrometheusQueryClient", "PrometheusQueryResult"]
+__all__ = [
+    "PrometheusQueryClient",
+    "PrometheusQueryResult",
+    "register_prometheus_tools",
+]

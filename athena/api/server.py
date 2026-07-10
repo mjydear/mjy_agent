@@ -73,10 +73,37 @@ async def _lifespan(app: FastAPI) -> "AsyncIterator[None]":
     再排空异步任务、关闭缓存连接，最后释放资源。
     设计思路：滚动更新/缩容时先摘流量再退出，避免请求被硬切断。
     """
-    yield  # 启动阶段：state 已由 create_app 装配完成，无需额外动作
+    # 启动阶段：装配 Skill 自进化守护进程（阶段②-C）——从持久化恢复技能库，再周期性复盘轨迹进化 Skill。
+    curator = None
+    service = getattr(app.state, "service", None)
+    skill_library = getattr(app.state, "skill_library", None)
+    if service is not None and skill_library is not None:
+        try:
+            await skill_library.load()  # 从持久化后端恢复已学 Skill，重启不丢
+            from athena.learning import CuratorDaemon, SkillEvolver, SkillValidator
+            from athena.tools.sandbox import SecuritySandbox
+
+            evolver = SkillEvolver(
+                skill_library,
+                SkillValidator(SecuritySandbox()),
+                feedback_store=getattr(app.state, "feedback_store", None),
+            )
+            curator = CuratorDaemon(service.tracer, job=evolver.job, interval_seconds=60.0)
+            await curator.start()
+            app.state.curator = curator
+            logger.info("skill self-evolution curator started")
+        except Exception as exc:  # noqa: BLE001 - 进化是增强项，失败不应阻断服务启动
+            logger.warning("curator start failed: %s", exc)
+
+    yield  # 运行阶段：state 已由 create_app 装配完成
     # 关闭阶段：优雅下线
     app.state.draining = True
     logger.info("graceful shutdown: draining traffic, closing resources")
+    if curator is not None:
+        try:
+            await curator.stop()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curator stop error: %s", exc)
     task_manager = getattr(app.state, "task_manager", None)
     if task_manager is not None:
         shutdown = getattr(task_manager, "shutdown", None)
@@ -164,6 +191,14 @@ def create_app(
     app.state.cache = create_cache(
         resolved_settings.cache.redis_url, namespace=resolved_settings.cache.namespace
     )
+    # Skill 自进化闭环基础设施：技能库（持久化 + 语义召回）与人工反馈存储。
+    from athena.memory.feedback import FeedbackStore
+    from athena.memory.skill import SkillLibrary
+
+    skill_library = SkillLibrary(cache=app.state.cache)
+    feedback_store = FeedbackStore(cache=app.state.cache)
+    app.state.skill_library = skill_library
+    app.state.feedback_store = feedback_store
     app.state.service = service or AthenaWebService(
         agent_factory=lambda: build_agent(
             None
@@ -190,6 +225,8 @@ def create_app(
         metrics_store=MetricsStore(app.state.cache),  # 运行指标落 Redis：多副本聚合
         benchmark_store=BenchmarkStore(app.state.cache),  # 评测报告落 Redis
         audit_store=HashChainAuditStore(app.state.cache),  # 审计哈希链落 Redis：防篡改
+        skill_library=skill_library,  # 技能库：Agent 召回 + Curator 进化写入（阶段②-C/D）
+        feedback_store=feedback_store,  # 人工反馈：驱动 Skill 修正/降权（阶段②-B）
     )
     # 异步任务管理器、幂等管理器
     app.state.task_manager = AsyncTaskManager(

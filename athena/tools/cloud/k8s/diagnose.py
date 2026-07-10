@@ -2,7 +2,7 @@
 📦 模块名称：Kubernetes 只读诊断分析器
 📍 架构位置：CloudOps 诊断层，位于 K8sReadOnlyClient 原始只读数据和 Agent/工作流之间。
 🎯 核心作用：把 Pod 状态 + 事件 + 日志尾部聚合成结构化根因、严重级别、修复建议与证据。
-🔗 依赖关系：依赖 K8sReadOnlyClient（复用其 mock/real + 自动降级 + 白名单）；被工具注册入口调用。
+🔗 依赖关系：依赖 K8sReadOnlyClient（真实集群 + 白名单）；被工具注册入口调用。
 💡 设计思路：使用确定性 SOP 规则，让常见故障在无 LLM 时也能稳定、可解释地诊断；
            证据（evidence）随每条结论一起返回，便于人工复核与写入知识库/trace。
 📚 学习重点：
@@ -63,10 +63,10 @@ class K8sReadOnlyDiagnoser:
     基于只读客户端的 Kubernetes 故障诊断器。
 
     功能说明：聚合 Pod 状态、事件与日志，输出一组可解释的诊断结论。
-    参数说明：client 是 K8sReadOnlyClient，可注入 mock/real/测试替身。
+    参数说明：client 是 K8sReadOnlyClient（真实集群，测试可注入 core_api/apps_api 替身）。
     返回值：diagnose_namespace() 返回 K8sFinding 列表。
     设计思路：诊断只消费只读数据，绝不产生写操作；规则化 SOP 保证可测试、可复现。
-    使用示例：K8sReadOnlyDiagnoser(K8sReadOnlyClient(mode="mock")).diagnose_namespace("default")
+    使用示例：K8sReadOnlyDiagnoser.from_settings(load_settings()).diagnose_namespace("default")
     """
 
     def __init__(
@@ -77,7 +77,7 @@ class K8sReadOnlyDiagnoser:
         """
         初始化诊断器。
 
-        功能说明：保存只读客户端，不传时使用默认 mock 客户端。
+        功能说明：保存只读客户端，不传时使用默认真实客户端（SDK 默认查找 kubeconfig）。
         参数说明：client 是只读 K8s 数据来源。
         返回值：None。
         设计思路：依赖注入让测试无需真实集群即可覆盖各分支。

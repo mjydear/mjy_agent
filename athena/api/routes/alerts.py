@@ -62,7 +62,7 @@ async def receive_alert(
     使用示例：POST /api/alerts/webhook {"alerts":[{"labels":{"alertname":"X"}}]}
     """
     payload = await request.json()
-    return service.ingest_alert(payload)
+    return await service.ingest_alert(payload)
 
 
 @router.get("/history")

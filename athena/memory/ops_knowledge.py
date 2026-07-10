@@ -2,7 +2,7 @@
 📦 模块名称：CloudOps 运维知识库
 📍 架构位置：记忆层的运维经验存储，位于故障工作流和知识检索 API 之间。
 🎯 核心作用：把成功排障案例保存为可搜索、可复用的运维知识。
-🔗 依赖关系：依赖 dataclass/time；被 FaultDiagnoseWorkflow 和 AthenaWebService 依赖。
+🔗 依赖关系：依赖 dataclass/time + infra.cache；被 AthenaWebService 的 Agent 诊断收尾依赖。
 💡 设计思路：使用轻量内存仓库模式，先跑通“记录案例 → 检索复用”的闭环。
 📚 学习重点：关注 record_case 和 search 如何把一次排障经验变成后续可检索资产。
 """

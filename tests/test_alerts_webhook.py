@@ -11,10 +11,19 @@ from fastapi.testclient import TestClient
 from athena.api.server import create_app
 from athena.api.services import AthenaWebService
 from athena.config import AthenaSettings
+from athena.tools.cloud.k8s import K8sReadOnlyDiagnoser
+from tests._k8s_fakes import demo_client
+from tests.test_web_console import build_test_agent
 
 
 def _service() -> AthenaWebService:
-    service = AthenaWebService(agent_factory=lambda: object(), session_ttl_seconds=60)
+    # ingest_alert 现为 async 并走云运维 Agent：注入测试 Agent 工厂 + Demo 只读诊断器。
+    service = AthenaWebService(
+        agent_factory=build_test_agent,
+        cloud_agent_factory=lambda actor: build_test_agent(),
+        k8s_diagnoser=K8sReadOnlyDiagnoser(demo_client()),
+        session_ttl_seconds=60,
+    )
     return service
 
 
@@ -60,7 +69,8 @@ def test_alert_webhook_accepts_alertmanager_payload_real() -> None: # 测试告�
     assert body["readonly_report"]["namespace"] == "prod"
     assert body["readonly_report"]["findings"]
     assert "prometheus_metrics" in body["readonly_report"]["metrics"]
-    assert body["workflow"]["status"] == "success"
+    # 告警现由云运维 Agent 诊断，返回 diagnosis 段（替代旧 workflow）。
+    assert body["diagnosis"]["status"] == "success"
 
     history = client.get("/api/alerts/history")
     assert history.status_code == 200

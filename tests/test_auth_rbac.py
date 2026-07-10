@@ -13,12 +13,23 @@ from athena.config import AthenaSettings
 
 
 def _stub_agent() -> object:
-    # workflow/cloud-ops 路由不会真正调用 agent，这里仅需一个可构造的占位对象
+    # workflow 路由不会真正调用 agent，这里仅需一个可构造的占位对象
     return object()
 
 
 def _service() -> AthenaWebService:
-    return AthenaWebService(agent_factory=_stub_agent, session_ttl_seconds=60)
+    # cloud-ops 现在走 Agent 大脑：注入确定性测试 Agent + Demo 诊断器，让 RBAC 测试聚焦鉴权本身，
+    # 不受真实集群可用性影响。
+    from athena.tools.cloud.k8s import K8sReadOnlyDiagnoser
+    from tests._k8s_fakes import demo_client
+    from tests.test_web_console import build_test_agent
+
+    return AthenaWebService(
+        agent_factory=_stub_agent,
+        cloud_agent_factory=lambda actor: build_test_agent(),
+        k8s_diagnoser=K8sReadOnlyDiagnoser(demo_client()),
+        session_ttl_seconds=60,
+    )
 
 
 def _client(settings: AthenaSettings) -> TestClient:

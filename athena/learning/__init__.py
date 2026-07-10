@@ -6,6 +6,7 @@ from athena.learning.complexity import (
     ComplexityWeights,
 )
 from athena.learning.curator import CuratorDaemon
+from athena.learning.skill_evolver import SkillEvolver
 from athena.learning.skill_gen import SkillGenerationResult, SkillGenerator
 from athena.learning.skill_optimizer import SkillValidationResult, SkillValidator
 from athena.learning.tracer import EventBus, TraceEvent, TraceObserver, Tracer
@@ -16,6 +17,7 @@ __all__ = [
     "ComplexityWeights",
     "CuratorDaemon",
     "EventBus",
+    "SkillEvolver",
     "SkillGenerationResult",
     "SkillGenerator",
     "SkillValidationResult",

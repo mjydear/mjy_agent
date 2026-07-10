@@ -1,12 +1,11 @@
 """Unit tests for the read-only Kubernetes diagnostics client and its tools.
 
-覆盖点：
-- mock 模式返回演示数据；
-- real 模式经注入的假 CoreV1Api 返回真实转换结果；
-- real 模式下 SDK 抛异常自动降级 mock（无 kubeconfig/连接失败场景）；
-- 命名空间白名单越权在 mock/real 都硬失败（不降级）；
+覆盖点（真实优先、无 mock）：
+- 注入的假 CoreV1Api/AppsV1Api 返回真实转换结果；
+- 真实调用失败直接抛 OPS_REAL_UNAVAILABLE（不降级、无 mock）；
+- 命名空间白名单越权硬失败（不降级）；
 - list_namespaces 按白名单过滤；
-- 非法 mode/空 Pod 名/非正 tail_lines 的边界校验；
+- 空 Pod 名/非正 tail_lines 的边界校验；
 - from_settings 装配与工具注册 + invoke 端到端。
 """
 
@@ -29,7 +28,8 @@ from athena.tools.cloud.k8s import (
     register_k8s_readonly_tools,
 )
 from athena.tools.cloud.k8s.summarizer import messages_contain_only_report
-from athena.tools.cloud.prometheus import PrometheusQueryClient
+from athena.tools.cloud.prometheus import PrometheusQueryClient, PrometheusQueryResult
+from tests._k8s_fakes import DemoAppsApi, DemoCoreApi, demo_client
 
 
 # ---------------------------------------------------------------------------
@@ -145,19 +145,19 @@ class ExplodingCoreApi:
 # ---------------------------------------------------------------------------
 # Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
 # 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
-# mock 模式
+# Demo 场景（注入 Demo 替身，复刻旧演示数据）
 # ---------------------------------------------------------------------------
 # Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
 # 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
-def test_mock_mode_list_pods_returns_demo_data_mock() -> None: # 测试mock模式下返回的Pods数据
-    client = K8sReadOnlyClient(mode="mock")
+def test_demo_list_pods_returns_demo_data() -> None: # 测试注入 Demo 替身后返回的 Pods 数据
+    client = demo_client()
     pods = client.list_pods("default")
     assert {p["name"] for p in pods} == {"api-7d9c", "checkout-5f8b", "image-worker-22a"}
     assert all(p["namespace"] == "default" for p in pods)
 
 
-def test_mock_mode_describe_events_logs_namespaces_real() -> None: # 测试mock模式下描述Pod及其事件和日志的功能
-    client = K8sReadOnlyClient(mode="mock")
+def test_demo_describe_events_logs_namespaces() -> None: # 测试描述 Pod 及其事件和日志的功能
+    client = demo_client()
     described = client.describe_pod("default", "checkout-5f8b")
     assert described["name"] == "checkout-5f8b"
     assert described["containers"]
@@ -179,8 +179,8 @@ def test_mock_mode_describe_events_logs_namespaces_real() -> None: # 测试mock�
 # ---------------------------------------------------------------------------
 # Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
 # 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
-def test_real_mode_uses_injected_core_api_real() -> None: # 测试real模式下使用注入的CoreApi
-    client = K8sReadOnlyClient(mode="real", core_api=FakeCoreApi())
+def test_real_mode_uses_injected_core_api_real() -> None: # 测试注入 CoreApi 后走真实转换逻辑
+    client = K8sReadOnlyClient(core_api=FakeCoreApi())
 
     pods = client.list_pods("default")
     assert pods[0]["name"] == "checkout-5f8b"
@@ -205,74 +205,16 @@ def test_real_mode_uses_injected_core_api_real() -> None: # 测试real模式下�
 # ---------------------------------------------------------------------------
 # Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
 # 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
-# real 模式自动降级
+# 真实调用失败：直接抛错（不降级、无 mock）
 # ---------------------------------------------------------------------------
 # Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
 # 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
-def test_real_mode_falls_back_to_mock_on_error_real() -> None: # 测试real模式下发生错误时降级到mock
-    client = K8sReadOnlyClient(mode="real", core_api=ExplodingCoreApi())
-
-    # 每个方法都应降级到 mock 数据而非抛错
-    assert {p["name"] for p in client.list_pods("default")} == {
-        "api-7d9c",
-        "checkout-5f8b",
-        "image-worker-22a",
-    }
-    assert client.describe_pod("default", "checkout-5f8b")["name"] == "checkout-5f8b"
-    assert client.list_events("default")
-    assert "[mock]" in client.get_pod_logs("default", "checkout-5f8b")
-    assert {n["name"] for n in client.list_namespaces()} == {
-        "default",
-        "kube-system",
-        "prod",
-    }
-
-
-def test_real_mode_falls_back_when_sdk_missing() -> None:
-    # 不注入 core_api 且真实环境无 kubeconfig：_get_core_api 内部异常应被降级捕获
-    client = K8sReadOnlyClient(
-        mode="real", kubeconfig="/nonexistent/kubeconfig-xyz"
-    )
-    pods = client.list_pods("default")  # 不应抛错
-    assert {p["name"] for p in pods} == {
-        "api-7d9c",
-        "checkout-5f8b",
-        "image-worker-22a",
-    }
-
-
-def test_strict_real_raises_instead_of_fallback() -> None:
-    # strict_real=True：real 调用失败不降级，直接抛 OPS_REAL_UNAVAILABLE
-    client = K8sReadOnlyClient(
-        mode="real", strict_real=True, core_api=ExplodingCoreApi()
-    )
+def test_real_call_failure_raises_ops_error() -> None: # 测试真实调用失败时抛 OPS_REAL_UNAVAILABLE
+    # 已彻底移除 mock：真实调用失败不再降级，直接抛 OPS_REAL_UNAVAILABLE
+    client = K8sReadOnlyClient(core_api=ExplodingCoreApi())
     with pytest.raises(OpsError) as exc_info:
         client.list_pods("default")
     assert exc_info.value.code == ErrorCode.OPS_REAL_UNAVAILABLE
-
-
-def test_fallback_sets_degraded_flag() -> None:
-    # 非 strict 模式：real 失败降级 mock 并置 last_call_degraded=True
-    degraded = K8sReadOnlyClient(mode="real", core_api=ExplodingCoreApi())
-    assert degraded.last_call_degraded is False  # 初始未降级
-    degraded.list_pods("default")
-    assert degraded.last_call_degraded is True
-
-    # real 成功则标记为 False
-    healthy = K8sReadOnlyClient(mode="real", core_api=FakeCoreApi())
-    healthy.list_pods("default")
-    assert healthy.last_call_degraded is False
-
-    # mock 模式恒为 False（从未尝试 real）
-    mock = K8sReadOnlyClient(mode="mock")
-    mock.list_pods("default")
-    assert mock.last_call_degraded is False
-
-
-def test_from_settings_wires_strict_real() -> None:
-    settings = AthenaSettings(ops=OpsSettings(mode="real", strict_real=True))
-    client = K8sReadOnlyClient.from_settings(settings)
-    assert client.strict_real is True
 
 
 # ---------------------------------------------------------------------------
@@ -283,7 +225,7 @@ def test_from_settings_wires_strict_real() -> None:
 # Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
 # 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 def test_namespace_allowlist_blocks_unlisted_namespace() -> None:
-    client = K8sReadOnlyClient(mode="mock", namespace_allowlist=["default"])
+    client = demo_client(namespace_allowlist=["default"])
     # 白名单内正常
     assert client.list_pods("default")
     # 白名单外硬失败
@@ -294,25 +236,25 @@ def test_namespace_allowlist_blocks_unlisted_namespace() -> None:
 
 def test_namespace_allowlist_enforced_in_real_mode() -> None:
     client = K8sReadOnlyClient(
-        mode="real", core_api=FakeCoreApi(), namespace_allowlist=["default"]
+        core_api=FakeCoreApi(), namespace_allowlist=["default"]
     )
     with pytest.raises(OpsError):
         client.describe_pod("prod", "whatever")
 
 
 def test_empty_allowlist_allows_any_namespace() -> None:
-    client = K8sReadOnlyClient(mode="mock", namespace_allowlist=[])
+    client = demo_client(namespace_allowlist=[])
     assert client.list_pods("anything")
 
 
 def test_list_namespaces_filtered_by_allowlist() -> None:
-    client = K8sReadOnlyClient(mode="mock", namespace_allowlist=["prod"])
+    client = demo_client(namespace_allowlist=["prod"])
     namespaces = client.list_namespaces()
     assert {n["name"] for n in namespaces} == {"prod"}
 
 
 def test_blank_namespace_rejected() -> None:
-    client = K8sReadOnlyClient(mode="mock")
+    client = demo_client()
     with pytest.raises(OpsError):
         client.list_pods("   ")
 
@@ -324,14 +266,8 @@ def test_blank_namespace_rejected() -> None:
 # ---------------------------------------------------------------------------
 # Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
 # 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
-def test_invalid_mode_raises() -> None:
-    with pytest.raises(OpsError) as exc_info:
-        K8sReadOnlyClient(mode="prod-cluster")
-    assert exc_info.value.code == ErrorCode.CONFIG_INVALID
-
-
 def test_blank_pod_name_and_non_positive_tail_lines() -> None:
-    client = K8sReadOnlyClient(mode="mock")
+    client = demo_client()
     with pytest.raises(OpsError):
         client.describe_pod("default", "")
     with pytest.raises(ValueError):
@@ -341,14 +277,12 @@ def test_blank_pod_name_and_non_positive_tail_lines() -> None:
 def test_from_settings_wires_ops_config() -> None:
     settings = AthenaSettings(
         ops=OpsSettings(
-            mode="real",
             kubernetes=K8sSettings(
                 namespace_allowlist=["default", "prod"], timeout=3.5
             ),
         )
     )
     client = K8sReadOnlyClient.from_settings(settings)
-    assert client.mode == "real"
     assert client.namespace_allowlist == ("default", "prod")
     assert client.timeout == 3.5
 
@@ -364,7 +298,7 @@ def test_from_settings_wires_ops_config() -> None:
 async def test_register_and_invoke_k8s_tools() -> None:
     registry = ToolRegistry()
     register_k8s_readonly_tools(
-        registry, client=K8sReadOnlyClient(mode="mock")
+        registry, client=demo_client()
     )
 
     expected = {
@@ -393,7 +327,7 @@ async def test_tool_invoke_surfaces_allowlist_error() -> None:
     registry = ToolRegistry()
     register_k8s_readonly_tools(
         registry,
-        client=K8sReadOnlyClient(mode="mock", namespace_allowlist=["default"]),
+        client=demo_client(namespace_allowlist=["default"]),
     )
     result = await registry.invoke(
         ToolCall(name="k8s_list_pods", arguments={"namespace": "prod"})
@@ -401,12 +335,6 @@ async def test_tool_invoke_surfaces_allowlist_error() -> None:
     assert result.success is False
     # registry 会把异常统一包成 TOOL_EXECUTION_FAILED，白名单原因通过 message 透出
     assert "not in the allowlist" in (result.error or "")
-
-
-def test_register_defaults_to_mock_without_client_or_settings() -> None:
-    registry = ToolRegistry()
-    register_k8s_readonly_tools(registry)
-    assert "k8s_list_namespaces" in registry.tools
 
 
 # ---------------------------------------------------------------------------
@@ -417,7 +345,7 @@ def test_register_defaults_to_mock_without_client_or_settings() -> None:
 # Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
 # 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 def test_diagnoser_flags_crashloop_with_log_evidence() -> None:
-    diagnoser = K8sReadOnlyDiagnoser(K8sReadOnlyClient(mode="mock"))
+    diagnoser = K8sReadOnlyDiagnoser(demo_client())
     findings = diagnoser.diagnose_namespace(
         "default", include_logs=True, log_tail_lines=5
     )
@@ -437,7 +365,7 @@ def test_diagnoser_flags_crashloop_with_log_evidence() -> None:
 
 
 def test_diagnoser_can_skip_logs() -> None:
-    diagnoser = K8sReadOnlyDiagnoser(K8sReadOnlyClient(mode="mock"))
+    diagnoser = K8sReadOnlyDiagnoser(demo_client())
     findings = diagnoser.diagnose_namespace("default", include_logs=False)
     crash = next(f for f in findings if f.pod == "checkout-5f8b")
     assert not any(ev.startswith("log:") for ev in crash.evidence)
@@ -445,14 +373,14 @@ def test_diagnoser_can_skip_logs() -> None:
 
 def test_diagnoser_respects_namespace_allowlist() -> None:
     diagnoser = K8sReadOnlyDiagnoser(
-        K8sReadOnlyClient(mode="mock", namespace_allowlist=["default"])
+        demo_client(namespace_allowlist=["default"])
     )
     with pytest.raises(OpsError):
         diagnoser.diagnose_namespace("prod")
 
 
 def test_diagnoser_rejects_non_positive_tail_lines() -> None:
-    diagnoser = K8sReadOnlyDiagnoser(K8sReadOnlyClient(mode="mock"))
+    diagnoser = K8sReadOnlyDiagnoser(demo_client())
     with pytest.raises(ValueError):
         diagnoser.diagnose_namespace("default", log_tail_lines=0)
 
@@ -464,7 +392,9 @@ def test_diagnoser_log_failure_does_not_break_diagnosis() -> None:
         ):  # noqa: ANN001
             raise RuntimeError("logs endpoint down")
 
-    diagnoser = K8sReadOnlyDiagnoser(LogFailingClient(mode="mock"))
+    diagnoser = K8sReadOnlyDiagnoser(
+        LogFailingClient(core_api=DemoCoreApi(), apps_api=DemoAppsApi())
+    )
     findings = diagnoser.diagnose_namespace("default", include_logs=True)
     crash = next(f for f in findings if f.pod == "checkout-5f8b")
     assert any("log unavailable" in ev for ev in crash.evidence)
@@ -473,7 +403,7 @@ def test_diagnoser_log_failure_does_not_break_diagnosis() -> None:
 @pytest.mark.asyncio
 async def test_diagnose_tool_registered_and_invokable() -> None:
     registry = ToolRegistry()
-    register_k8s_readonly_tools(registry, client=K8sReadOnlyClient(mode="mock"))
+    register_k8s_readonly_tools(registry, client=demo_client())
     assert "k8s_diagnose_namespace" in registry.tools
 
     result = await registry.invoke(
@@ -497,7 +427,7 @@ async def test_diagnose_tool_registered_and_invokable() -> None:
 # Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
 # 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 def test_mock_list_deployments_services_nodes() -> None:
-    client = K8sReadOnlyClient(mode="mock")
+    client = demo_client()
 
     deployments = client.list_deployments("default")
     by_name = {d["name"]: d for d in deployments}
@@ -519,7 +449,7 @@ def test_mock_list_deployments_services_nodes() -> None:
 
 
 def test_new_readonly_methods_respect_allowlist() -> None:
-    client = K8sReadOnlyClient(mode="mock", namespace_allowlist=["default"])
+    client = demo_client(namespace_allowlist=["default"])
     assert client.list_deployments("default")
     assert client.list_services("default")
     with pytest.raises(OpsError):
@@ -614,7 +544,7 @@ class FakeServiceNodeApi:
 
 
 def test_real_mode_deployments_via_injected_apps_api() -> None:
-    client = K8sReadOnlyClient(mode="real", apps_api=FakeAppsApi())
+    client = K8sReadOnlyClient(apps_api=FakeAppsApi())
     deployments = client.list_deployments("default")
     assert deployments[0]["name"] == "checkout"
     assert deployments[0]["desired"] == 2
@@ -622,7 +552,7 @@ def test_real_mode_deployments_via_injected_apps_api() -> None:
 
 
 def test_real_mode_services_and_nodes_via_injected_core_api() -> None:
-    client = K8sReadOnlyClient(mode="real", core_api=FakeServiceNodeApi())
+    client = K8sReadOnlyClient(core_api=FakeServiceNodeApi())
 
     services = client.list_services("default")
     assert services[0]["name"] == "api"
@@ -637,27 +567,10 @@ def test_real_mode_services_and_nodes_via_injected_core_api() -> None:
     assert nodes[0]["pressure"] == []  # MemoryPressure=False 不计入
 
 
-def test_real_mode_new_methods_fall_back_to_mock_on_error() -> None:
-    client = K8sReadOnlyClient(
-        mode="real", kubeconfig="/nonexistent/kubeconfig-xyz"
-    )
-    # 无 kubeconfig/SDK：三个新方法都应降级 mock，不抛错
-    assert {d["name"] for d in client.list_deployments("default")} == {
-        "api",
-        "checkout",
-    }
-    assert {s["name"] for s in client.list_services("default")} == {
-        "api",
-        "checkout",
-    }
-    assert {e["name"] for e in client.list_endpoints("default")} == {"api", "checkout"}
-    assert {n["name"] for n in client.get_node_status()} == {"node-a", "node-b"}
-
-
 @pytest.mark.asyncio
 async def test_new_readonly_tools_registered_and_invokable() -> None:
     registry = ToolRegistry()
-    register_k8s_readonly_tools(registry, client=K8sReadOnlyClient(mode="mock"))
+    register_k8s_readonly_tools(registry, client=demo_client())
     for name in (
         "k8s_list_deployments",
         "k8s_list_services",
@@ -681,7 +594,7 @@ async def test_new_readonly_tools_registered_and_invokable() -> None:
 # Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
 # 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 def test_build_report_produces_structured_schema() -> None:
-    diagnoser = K8sReadOnlyDiagnoser(K8sReadOnlyClient(mode="mock"))
+    diagnoser = K8sReadOnlyDiagnoser(demo_client())
     report = diagnoser.build_report("default", include_logs=True)
 
     assert report.namespace == "default"
@@ -704,7 +617,7 @@ def test_build_report_produces_structured_schema() -> None:
 
 
 def test_playbooks_emit_service_unreachable_ops_finding() -> None:
-    diagnoser = K8sReadOnlyDiagnoser(K8sReadOnlyClient(mode="mock"))
+    diagnoser = K8sReadOnlyDiagnoser(demo_client())
     report = diagnoser.build_report("default", include_logs=False)
     service = next(f for f in report.findings if f.resource_kind == "Service")
 
@@ -769,7 +682,7 @@ def test_playbooks_emit_pending_ops_finding() -> None:
                 }
             ]
 
-    diagnoser = K8sReadOnlyDiagnoser(PendingClient(mode="mock"))
+    diagnoser = K8sReadOnlyDiagnoser(PendingClient())
     report = diagnoser.build_report("default", include_logs=False)
     pending = report.findings[0]
 
@@ -781,7 +694,7 @@ def test_playbooks_emit_pending_ops_finding() -> None:
 
 
 def test_evidence_bound_summarizer_prompt_contains_only_report_json() -> None:
-    diagnoser = K8sReadOnlyDiagnoser(K8sReadOnlyClient(mode="mock"))
+    diagnoser = K8sReadOnlyDiagnoser(demo_client())
     report = diagnoser.build_report("default", include_logs=False)
     summarizer = EvidenceBoundReportSummarizer()
     messages = summarizer.build_messages(report)
@@ -794,7 +707,7 @@ def test_evidence_bound_summarizer_prompt_contains_only_report_json() -> None:
 
 
 def test_deterministic_summary_is_based_on_report_fields() -> None:
-    diagnoser = K8sReadOnlyDiagnoser(K8sReadOnlyClient(mode="mock"))
+    diagnoser = K8sReadOnlyDiagnoser(demo_client())
     report = diagnoser.build_report("default", include_logs=False)
     summary = EvidenceBoundReportSummarizer.deterministic_summary(report)
 
@@ -803,11 +716,27 @@ def test_deterministic_summary_is_based_on_report_fields() -> None:
     assert "建议动作" in summary
 
 
+class FakePrometheus(PrometheusQueryClient):
+    """Prometheus 查询替身：返回真实结构的高位指标值（生产已无 mock）。"""
+
+    def query(self, name, promql, unit=""):  # noqa: ANN001
+        value = {
+            "pod_cpu_usage": 0.92,
+            "pod_memory_usage": 880 * 1024 * 1024,
+            "pod_restart_count": 7.0,
+        }.get(name, 1.0)
+        return PrometheusQueryResult(
+            name=name,
+            query=promql,
+            value=value,
+            source="fake",
+            available=True,
+            unit=unit,
+        )
+
+
 def test_report_includes_prometheus_metrics_when_enabled() -> None:
-    diagnoser = K8sReadOnlyDiagnoser(
-        K8sReadOnlyClient(mode="mock"),
-        PrometheusQueryClient(enabled=True, base_url="mock://prometheus"),
-    )
+    diagnoser = K8sReadOnlyDiagnoser(demo_client(), FakePrometheus(enabled=True))
     report = diagnoser.build_report("default", include_logs=False)
 
     assert report.metrics["prometheus_available"] is True
@@ -820,10 +749,7 @@ def test_report_includes_prometheus_metrics_when_enabled() -> None:
 
 
 def test_cpu_memory_playbook_emits_ops_finding_when_metrics_high() -> None:
-    diagnoser = K8sReadOnlyDiagnoser(
-        K8sReadOnlyClient(mode="mock"),
-        PrometheusQueryClient(enabled=True, base_url="mock://prometheus"),
-    )
+    diagnoser = K8sReadOnlyDiagnoser(demo_client(), FakePrometheus(enabled=True))
     report = diagnoser.build_report("default", include_logs=False)
     resource_findings = [
         finding
@@ -838,7 +764,7 @@ def test_cpu_memory_playbook_emits_ops_finding_when_metrics_high() -> None:
 
 def test_k8s_write_action_preview_and_allowlist_enforcement() -> None:
     executor = K8sWriteActionExecutor(
-        K8sReadOnlyClient(mode="mock", namespace_allowlist=["default"])
+        demo_client(namespace_allowlist=["default"])
     )
     preview = executor.preview(
         "environment=staging scale deployment checkout replicas=2", "staging"
@@ -860,7 +786,7 @@ def test_k8s_write_action_preview_and_allowlist_enforcement() -> None:
 
 
 def test_k8s_write_action_blocks_prod_by_default() -> None:
-    executor = K8sWriteActionExecutor(K8sReadOnlyClient(mode="mock"))
+    executor = K8sWriteActionExecutor(demo_client())
     preview = executor.preview("environment=prod scale deployment checkout replicas=2", "prod")
 
     assert preview is not None
@@ -872,7 +798,7 @@ def test_k8s_write_action_blocks_prod_by_default() -> None:
 
 def test_k8s_write_action_allows_prod_when_explicitly_enabled() -> None:
     executor = K8sWriteActionExecutor(
-        K8sReadOnlyClient(mode="mock"),
+        demo_client(),
         K8sActionSecurityPolicy(prod_write_enabled=True),
         actor="tenant-a",
     )
@@ -888,7 +814,7 @@ def test_k8s_write_action_allows_prod_when_explicitly_enabled() -> None:
 
 def test_k8s_write_action_enforces_verb_allowlist() -> None:
     executor = K8sWriteActionExecutor(
-        K8sReadOnlyClient(mode="mock"),
+        demo_client(),
         K8sActionSecurityPolicy(allowed_verbs=("rollout_restart",)),
     )
     preview = executor.preview("scale deployment checkout replicas=2", "default")
@@ -901,7 +827,7 @@ def test_k8s_write_action_enforces_verb_allowlist() -> None:
 
 def test_k8s_write_action_enforces_resource_kind_allowlist() -> None:
     executor = K8sWriteActionExecutor(
-        K8sReadOnlyClient(mode="mock"),
+        demo_client(),
         K8sActionSecurityPolicy(allowed_resource_kinds=("StatefulSet",)),
     )
     preview = executor.preview("rollout restart deployment checkout", "default")
@@ -913,7 +839,7 @@ def test_k8s_write_action_enforces_resource_kind_allowlist() -> None:
 
 
 def test_k8s_write_action_blocks_high_risk_commands() -> None:
-    executor = K8sWriteActionExecutor(K8sReadOnlyClient(mode="mock"))
+    executor = K8sWriteActionExecutor(demo_client())
     result = executor.preview("delete pvc data-volume namespace=default", "default")
 
     assert result is not None
@@ -923,7 +849,7 @@ def test_k8s_write_action_blocks_high_risk_commands() -> None:
 
 
 def test_report_dict_is_json_serializable() -> None:
-    diagnoser = K8sReadOnlyDiagnoser(K8sReadOnlyClient(mode="mock"))
+    diagnoser = K8sReadOnlyDiagnoser(demo_client())
     payload = diagnoser.report_dict("default")
     # 能被 json 序列化，且顶层字段齐全
     dumped = json.loads(json.dumps(payload, ensure_ascii=False))
@@ -953,6 +879,17 @@ def test_report_summary_when_no_findings() -> None:
                 }
             ]
 
+        def describe_pod(self, namespace, name):  # noqa: ANN001
+            return {
+                "name": name,
+                "namespace": namespace,
+                "status": "Running",
+                "node": "node-a",
+                "labels": {"app": "api"},
+                "containers": [],
+                "conditions": [],
+            }
+
         def list_events(self, namespace="default", pod_name=None):  # noqa: ANN001
             return []
 
@@ -965,7 +902,7 @@ def test_report_summary_when_no_findings() -> None:
         def get_node_status(self):  # noqa: ANN001
             return []
 
-    diagnoser = K8sReadOnlyDiagnoser(HealthyClient(mode="mock"))
+    diagnoser = K8sReadOnlyDiagnoser(HealthyClient())
     report = diagnoser.build_report("default")
     assert report.findings == []
     assert "未发现异常" in report.summary

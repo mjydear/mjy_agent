@@ -64,8 +64,8 @@ const elements = {
 // 💡 学习提示：空态欢迎页的建议卡片，点击后自动切换模式并填充输入框，降低上手门槛。
 const SUGGESTIONS = [
   { icon: "🚀", title: "介绍一下 Athena Agent", desc: "了解自研 Agent 核心能力", mode: "chat", prompt: "介绍一下 Athena Agent 的整体架构和核心能力" },
-  { icon: "☸️", title: "诊断 K8s 崩溃故障", desc: "云运维 · K8s 运维", mode: "cloud", cloudMode: "k8s", prompt: "诊断 payment 服务的 CrashLoopBackOff" },
-  { icon: "💸", title: "云成本优化巡检", desc: "云运维 · 成本优化", mode: "cloud", cloudMode: "cost", prompt: "帮我做一次云成本优化巡检，找出闲置资源" },
+  { icon: "☸️", title: "诊断 K8s 崩溃故障", desc: "云运维 · K8s 运维", mode: "cloud", cloudMode: "k8s", prompt: "诊断 default 命名空间的 CrashLoopBackOff" },
+  { icon: "🚨", title: "告警根因排查", desc: "云运维 · 故障排查", mode: "cloud", cloudMode: "fault", prompt: "排查告警 KubePodCrashLooping，定位根因并给出修复建议" },
   { icon: "🔀", title: "多 Agent 排查线上延迟", desc: "多 Agent 工作流", mode: "workflow", prompt: "编排多 Agent 排查生产环境 API 延迟升高" },
 ];
 
@@ -407,7 +407,9 @@ async function runCloudOps(task, confirmed = false) {
     addCloudConfirmation(response.answer);
   } else {
     state.pendingCloudConfirmation = null;
-    addMessage("assistant", response.answer, "assistant");
+    const bubble = addMessage("assistant", response.answer, "assistant");
+    // 人工反馈入口：采纳/修正/否决，驱动 Skill 自进化闭环（阶段②-B）。
+    if (response.task_id) addCloudFeedback(bubble, response.task_id);
   }
   state.activeTab = "trace";
   renderTabs();
@@ -438,6 +440,43 @@ function addCloudConfirmation(message) {
   });
   bubble.appendChild(document.createElement("br"));
   bubble.appendChild(button);
+}
+
+/**
+ * 渲染人工反馈条（采纳 / 修正 / 否决）。
+ *
+ * 功能说明：为一次云运维诊断结论提供人工反馈入口，POST /api/cloud-ops/feedback。
+ * 参数说明：bubble 是承载结论的消息气泡；taskId 是本次诊断任务 id（= Agent run_id）。
+ * 返回值：无。
+ * 设计思路：反馈是 Skill 自进化最高质量的监督信号——采纳=正样本、修正=补丁、否决=降权。
+ */
+function addCloudFeedback(bubble, taskId) {
+  const bar = document.createElement("div");
+  bar.className = "feedback-bar mt-2";
+  const submit = async (verdict) => {
+    let correction = "";
+    if (verdict === "correct") {
+      correction = window.prompt("请输入修正意见（将用于修正对应 Skill）：") || "";
+      if (!correction.trim()) return;
+    }
+    try {
+      await api("/api/cloud-ops/feedback", {
+        method: "POST",
+        body: JSON.stringify({ task_id: taskId, verdict, correction_text: correction }),
+      });
+      bar.textContent = verdict === "adopt" ? "已采纳 ✓" : verdict === "correct" ? "已提交修正 ✓" : "已否决 ✓";
+    } catch (err) {
+      bar.textContent = "反馈提交失败";
+    }
+  };
+  for (const [verdict, label] of [["adopt", "👍 采纳"], ["correct", "✏️ 修正"], ["reject", "👎 否决"]]) {
+    const btn = document.createElement("button");
+    btn.className = "feedback-button";
+    btn.textContent = label;
+    btn.addEventListener("click", () => submit(verdict));
+    bar.appendChild(btn);
+  }
+  bubble.appendChild(bar);
 }
 
 /**
@@ -669,12 +708,10 @@ function renderCloudStatus(status) {
         ? "unavailable"
         : "enabled"
     : "disabled";
-  const modeText = status.degraded === true
-    ? `${escapeHtml(status.source || status.mode || "mock")} (降级 mock)`
-    : escapeHtml(status.source || status.mode || "mock");
-  const modeClass = status.degraded === true ? " degraded" : "";
+  // 真实链路、无 mock：source 恒为 real。真实集群不可达时后端直接报错，不会静默降级。
+  const modeText = escapeHtml(status.source || "real");
   return `<section class="ops-status-grid">
-    <div class="ops-status-card${modeClass}"><span>模式</span><strong>${modeText}</strong></div>
+    <div class="ops-status-card"><span>数据源</span><strong>${modeText}</strong></div>
     <div class="ops-status-card"><span>K8s context</span><strong>${escapeHtml(status.k8s_context || "default")}</strong></div>
     <div class="ops-status-card"><span>Namespace</span><strong>${escapeHtml(status.namespace || "default")}</strong><small>${escapeHtml((status.namespace_scope || ["*"]).join(", "))}</small></div>
     <div class="ops-status-card"><span>Prometheus</span><strong>${escapeHtml(prometheusText)}</strong><small>${escapeHtml(prometheus.base_url || "-")}</small></div>

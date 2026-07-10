@@ -64,23 +64,21 @@ observability:
   service_name: athena-agent
   metrics_enabled: true
 ops:
-  # 云运维 K8s 诊断：mock=始终用演示数据；real=优先真实集群，缺 kubeconfig/连接失败自动降级 mock
-  mode: mock
-  # strict_real=false：real 连不上时静默降级 mock（演示友好）；true：直接抛错不降级（生产建议）
-  strict_real: false
+  # 云运维 K8s 诊断：真实链路、无 mock。始终直连真实集群，连接/调用失败直接报错，不返回模拟数据。
   # require_durable_audit=true：启动时若未配置 Redis 则报错，强制持久化审计；生产用 ATHENA_OPS_REQUIRE_DURABLE_AUDIT 开启
   require_durable_audit: false
   kubernetes:
-    # kubeconfig 为 null 时用 SDK 默认查找（集群内配置或 ~/.kube/config）；生产用 ATHENA_OPS_K8S_KUBECONFIG 注入
+    # kubeconfig 为 null 时用 SDK 默认查找（集群内配置或 ~/.kube/config）；生产用 ATHENA_OPS_K8S_KUBECONFIG 注入。
+    # 本地联调用 deploy/kind-demo 起 kind 集群后，SDK 默认查找 ~/.kube/config 即可。
     kubeconfig: null
     context: null
-    # namespace_allowlist 为空 = 不限制（本地演示）；生产显式收窄，如 [default, prod]
+    # namespace_allowlist 为空 = 不限制；生产显式收窄，如 [default, prod]
     namespace_allowlist: []
     timeout: 10.0
   prometheus:
-    # 默认关闭，避免本地无 Prometheus 时影响 K8s 诊断；演示可设 enabled=true + mock://prometheus
-    enabled: false
-    base_url: mock://prometheus
+    # 启用真实 Prometheus 指标查询；base_url 必须是 http(s)。本地 kind 内可用 deploy/kind-demo/prometheus.yaml 部署。
+    enabled: true
+    base_url: http://127.0.0.1:9090
     timeout_seconds: 5.0
   security:
     # 默认只读；写操作只允许少量低风险 Deployment 动作，并且必须人工确认

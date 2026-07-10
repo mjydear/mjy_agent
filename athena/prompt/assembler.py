@@ -130,6 +130,7 @@ class ContextAssembler(BaseModel):
         memory: WorkingMemory,
         tools: ToolRegistry,
         scratchpad: str,
+        skills: str = "",
     ) -> str:
         """
         将 7 份信息组装成一个完整的 LLM 提示词字符串。
@@ -214,6 +215,7 @@ class ContextAssembler(BaseModel):
                 scratchpad=scratchpad,
                 query=query,
                 output_contract=self.output_contract,
+                skills=skills or "（暂无已学技能）",
             )
         except (OSError, KeyError) as exc:
             # 💡 学习提示：同时捕获两种异常：

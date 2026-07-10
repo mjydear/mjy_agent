@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
 from starlette.responses import StreamingResponse
 
 from athena.api.auth import TenantContext
@@ -84,6 +84,35 @@ async def stream_cloud_ops(
         ),
         media_type="text/event-stream",
     )
+
+
+@router.post("/feedback")
+async def submit_feedback(
+    body: dict = Body(...),
+    service: AthenaWebService = Depends(get_service),
+    tenant: TenantContext = Depends(require_scope("cloud:execute")),
+) -> dict[str, object]:
+    """
+    提交对某次云运维诊断的人工反馈（采纳/修正/否决）。
+
+    功能说明：接收 {task_id, verdict, correction_text}，写入反馈存储，驱动 Skill 自进化。
+    参数说明：body 是 JSON 请求体；verdict 取 adopt|correct|reject。
+    返回值：反馈受理结果。
+    使用示例：POST /api/cloud-ops/feedback {"task_id":"cloud-k8s-x","verdict":"correct","correction_text":"..."}
+    """
+    task_id = str(body.get("task_id", ""))
+    verdict = str(body.get("verdict", ""))
+    correction_text = str(body.get("correction_text", "") or "")
+    return service.submit_feedback(task_id, verdict, correction_text)
+
+
+@router.get("/feedback")
+async def list_feedback(
+    limit: int = Query(default=50, ge=1, le=200),
+    service: AthenaWebService = Depends(get_service),
+) -> dict[str, object]:
+    """返回最近的人工反馈记录。"""
+    return service.list_feedback(limit)
 
 
 @router.get("/knowledge")

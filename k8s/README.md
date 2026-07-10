@@ -1,4 +1,27 @@
-# Athena Agent — Kubernetes 部署
+# Athena Agent — Kubernetes Deployment
+
+## Overview
+This document outlines the deployment process for the Athena Agent on Kubernetes, demonstrating a simple setup with examples.
+
+### Example Deployment Steps
+
+1. **Build and Push Docker Image**: Use the following commands to build and push the Docker image:
+   ```bash
+   docker build -t <registry>/athena-agent:latest .
+   docker push <registry>/athena-agent:latest
+   ```
+2. **Deploy to Kubernetes**: Apply the Kubernetes manifests in order:
+   ```bash
+   kubectl apply -f k8s/configmap.yaml
+   kubectl apply -f k8s/secret.yaml
+   kubectl apply -f k8s/redis.yaml
+   kubectl apply -f k8s/deployment.yaml
+   kubectl apply -f k8s/hpa.yaml
+   ```
+3. **Check Status**: You can check the status of your pods and services using:
+   ```bash
+   kubectl -n athena get pods,svc,hpa
+   ```
 
 多副本 + HPA 弹性扩容 + 健康探针的生产部署清单。
 

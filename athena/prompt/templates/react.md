@@ -9,6 +9,9 @@ Working Memory:
 Available Tools:
 {tools}
 
+Learned Skills (reusable experience from past runs; use when relevant):
+{skills}
+
 Scratchpad:
 {scratchpad}
 

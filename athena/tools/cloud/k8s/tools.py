@@ -15,6 +15,10 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from athena.tools.cloud.k8s.actions import (
+    K8sActionSecurityPolicy,
+    K8sWriteActionExecutor,
+)
 from athena.tools.cloud.k8s.client import K8sReadOnlyClient
 from athena.tools.cloud.k8s.diagnose import K8sReadOnlyDiagnoser
 from athena.types import JSONValue
@@ -117,3 +121,56 @@ def register_k8s_readonly_tools(
                 namespace, include_logs=include_logs, log_tail_lines=tail_lines
             )
         )
+
+
+def register_k8s_write_tools(
+    registry: ToolRegistry,
+    client: K8sReadOnlyClient | None = None,
+    settings: AthenaSettings | None = None,
+    *,
+    actor: str = "system",
+) -> None:
+    """
+    注册 K8s 受控写操作的**预览**工具到工具注册表（安全护栏）。
+
+    功能说明：只注册 `k8s_preview_action`，让 Agent 能在诊断中提出低风险写操作方案，
+        但绝不在 ReAct 循环内直接执行——真正执行由“人工确认后的确定性路径”完成
+        （见 athena/api/services.py 的 run_cloud_ops confirmed 分支）。
+    参数说明：
+        registry：目标工具注册表。
+        client：显式注入的只读客户端（写执行器复用它做 patch 与 verify），优先级最高。
+        settings：无 client 时从 settings.ops 构造客户端与安全策略。
+        actor：操作者标识，透传到 K8sActionPlan 的安全元数据。
+    返回值：None（副作用是向 registry 注册工具）。
+    设计思路：把“写操作必须人工确认”做成架构约束——Agent 只能 preview，不能 execute，
+        使这条安全护栏无法被 LLM 的自主决策绕过。
+    使用示例：register_k8s_write_tools(registry, settings=load_settings())
+    """
+    if client is not None:
+        k8s = client
+    elif settings is not None:
+        k8s = K8sReadOnlyClient.from_settings(settings)
+    else:
+        k8s = K8sReadOnlyClient()
+
+    if settings is not None:
+        policy = K8sActionSecurityPolicy.from_settings(settings.ops.security)
+    else:
+        policy = K8sActionSecurityPolicy()
+
+    executor = K8sWriteActionExecutor(k8s, policy, actor=actor)
+
+    @registry.register
+    def k8s_preview_action(task: str, namespace: str = "default") -> str:
+        """Preview a low-risk Kubernetes write action (rollout restart / scale / pause / resume).
+
+        This NEVER executes the action. It returns a plan describing the command,
+        risk, whether human confirmation is required, blocked high-risk actions, and
+        a rollback suggestion. Actual execution happens only after human confirmation.
+        Returns a JSON object; when the task is read-only (no write intent) it returns
+        {"action": null} so the agent knows to keep diagnosing read-only.
+        """
+        result = executor.preview(task, namespace)
+        if result is None:
+            return _dumps({"action": None, "reason": "no write intent detected; stay read-only"})
+        return _dumps(result.to_dict())

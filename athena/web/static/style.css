@@ -377,6 +377,28 @@ body {
   cursor: not-allowed;
 }
 
+/* 人工反馈条：采纳 / 修正 / 否决，驱动 Skill 自进化闭环 */
+.feedback-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--color-text-secondary, #888);
+}
+.feedback-button {
+  border: 1px solid var(--color-border, #ddd);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+.feedback-button:hover {
+  background: var(--color-surface-hover, rgba(0, 0, 0, 0.05));
+}
+
 /* ============================================================
    📌 会话卡片（仿 ChatGPT：时间分组 + 两行紧凑项）
    ============================================================ */

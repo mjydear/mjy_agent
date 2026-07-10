@@ -86,7 +86,7 @@ def build_client() -> TestClient:
     return TestClient(create_app(service=service))
 
 
-def test_web_console_root_and_session_chat() -> None:
+def test_web_console_root_and_session_chat() -> None: # 测试 Web 控制台根目录和会话聊天功能
     """
     验证首页、创建会话、同步对话和指标接口。
 

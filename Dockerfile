@@ -1,5 +1,10 @@
 # syntax=docker/dockerfile:1
-# 多阶段构建：builder 装依赖，runtime 只带运行所需，镜像更小、攻击面更低。
+# Multi-stage build: builder installs dependencies, runtime only includes what's necessary, smaller image, reduced attack surface.
+
+
+# Base image for building the application
+FROM python:3.12-slim AS builder
+...
 
 FROM python:3.12-slim AS builder
 WORKDIR /app

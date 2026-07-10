@@ -29,6 +29,7 @@ from __future__ import annotations  # 💡 学习提示：支持类型注解前�
 
 import asyncio  # 💡 学习提示：CLI 是同步的，Agent 是异步的，asyncio.run() 是连接两者的桥梁
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer  # 💡 学习提示：Typer 是基于 Click 的 CLI 框架，用 Python 类型注解自动生成帮助文档
 
@@ -49,7 +50,14 @@ from athena.memory import WorkingMemory
 from athena.prompt import ContextAssembler
 from athena.tools import ToolRegistry
 from athena.tools.builtin.basic import register_basic_tools
-from athena.tools.cloud.k8s import register_k8s_readonly_tools
+from athena.tools.cloud import register_prometheus_tools
+from athena.tools.cloud.k8s import (
+    register_k8s_readonly_tools,
+    register_k8s_write_tools,
+)
+
+if TYPE_CHECKING:
+    from athena.config import AthenaSettings
 
 # 💡 学习提示：typer.Typer() 创建 CLI 应用实例，help 参数会显示在 `athena --help` 里
 # 这个 app 对象扮演"命令注册表"的角色，后面的 @app.command() 都是注册进它里面的
@@ -110,8 +118,69 @@ def build_agent(config_path: Path | None = None) -> ReActAgent:
     )  # 💡 学习提示：注册内置工具（echo、current_utc_time），更多工具也在这里加
     register_k8s_readonly_tools(
         registry, settings=settings
-    )  # 💡 学习提示：注册 K8s 只读诊断工具，按 settings.ops 走 mock/real，缺集群自动降级
+    )  # 💡 学习提示：注册 K8s 只读诊断工具，按 settings.ops 走 real（缺集群/strict_real 抛错）
+    register_prometheus_tools(
+        registry, settings=settings
+    )  # 💡 学习提示：注册 Prometheus 指标查询工具，作为 Agent 自主串联的指标证据源
 
+    return _assemble_react_agent(settings, registry)
+
+
+def build_cloud_agent(
+    settings: "AthenaSettings",
+    *,
+    actor: str = "system",
+    tracer: "object | None" = None,
+    skill_library: "object | None" = None,
+) -> ReActAgent:
+    """
+    组装一个面向云运维的 ReActAgent（顶层大脑，含全套云工具）。
+
+    功能说明：在 build_agent 的基础上额外注册 K8s 受控写操作**预览**工具，让 Agent 能在
+        自主诊断中提出低风险写方案，但执行仍由“人工确认后的确定性路径”完成。
+    参数说明：
+        settings：已加载的顶层配置对象（复用调用方的 settings，避免重复读盘）。
+        actor：操作者标识，透传到写操作安全元数据。
+        tracer：可选执行轨迹记录器（注入后 Agent 每步落 trace，供 Skill 自进化，阶段②-A）。
+        skill_library：可选技能库（注入后 Agent 召回已学 Skill 注入 prompt，阶段②-D）。
+    返回值：装配好、可直接 run() 的云运维 ReActAgent。
+    设计思路：把云运维会话所需的 K8s 只读 + Prometheus + 写预览工具集中装配，
+        使 Agent 成为唯一编排中枢，K8s/Prometheus 只是它调用的底层原子工具。
+    使用示例：agent = build_cloud_agent(load_settings())
+    """
+    registry = ToolRegistry()
+    register_basic_tools(registry)
+    register_k8s_readonly_tools(registry, settings=settings)
+    register_prometheus_tools(registry, settings=settings)
+    register_k8s_write_tools(registry, settings=settings, actor=actor)
+    return _assemble_react_agent(
+        settings,
+        registry,
+        cloud_ops=True,
+        tracer=tracer,
+        skill_library=skill_library,
+    )
+
+
+def _assemble_react_agent(
+    settings: "AthenaSettings",
+    registry: ToolRegistry,
+    *,
+    cloud_ops: bool = False,
+    tracer: "object | None" = None,
+    skill_library: "object | None" = None,
+) -> ReActAgent:
+    """
+    根据 settings 与已填充的工具注册表装配 ReActAgent（内部复用）。
+
+    功能说明：集中处理 LLM 工厂、复杂度路由、韧性包裹和依赖注入组装。
+    参数说明：
+        settings：顶层配置。
+        registry：已注册好工具的 ToolRegistry。
+        cloud_ops：True 时使用云运维系统提示（证据驱动、只读优先、写操作先 preview）。
+    返回值：装配完毕的 ReActAgent。
+    设计思路：build_agent / build_cloud_agent 的公共装配逻辑抽到一处，避免重复。
+    """
     llm_client = LLMClientFactory.create(
         provider=settings.llm.provider,
         model=settings.llm.model,
@@ -145,14 +214,22 @@ def build_agent(config_path: Path | None = None) -> ReActAgent:
         fallback=default_fault_diagnose_fallback,
     )
 
+    assembler = (
+        ContextAssembler(system_prompt_path=Path("athena/prompt/templates/cloud_ops.md"))
+        if cloud_ops
+        else ContextAssembler()
+    )
+
     # 💡 学习提示：ReActAgent 使用"依赖注入"——把所有组件作为参数传进去，
     # 而不是在 ReActAgent 内部自己创建。这样可以在测试时注入 mock 对象
     return ReActAgent(
         llm_client=llm_client,
-        prompt_assembler=ContextAssembler(),
+        prompt_assembler=assembler,
         tool_registry=registry,
         memory=WorkingMemory(max_tokens=settings.memory.working_max_tokens),
         max_steps=settings.agent.max_steps,
+        tracer=tracer,  # type: ignore[arg-type]
+        skill_library=skill_library,  # type: ignore[arg-type]
     )
 
 

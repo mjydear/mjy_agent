@@ -16,7 +16,10 @@ from athena.tools.cloud.k8s.client import K8sReadOnlyClient
 from athena.tools.cloud.k8s.diagnose import K8sFinding, K8sReadOnlyDiagnoser
 from athena.tools.cloud.k8s.report import OpsDiagnosisReport, OpsFinding
 from athena.tools.cloud.k8s.summarizer import EvidenceBoundReportSummarizer
-from athena.tools.cloud.k8s.tools import register_k8s_readonly_tools
+from athena.tools.cloud.k8s.tools import (
+    register_k8s_readonly_tools,
+    register_k8s_write_tools,
+)
 
 __all__ = [
     "EvidenceBoundReportSummarizer",
@@ -30,4 +33,5 @@ __all__ = [
     "OpsDiagnosisReport",
     "OpsFinding",
     "register_k8s_readonly_tools",
+    "register_k8s_write_tools",
 ]

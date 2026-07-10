@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from athena.memory.skill import Skill
@@ -54,57 +55,83 @@ class SkillValidator:
     """
 
     def __init__(
-        self, sandbox: SecuritySandbox, acceptance_threshold: float = 0.8
+        self,
+        sandbox: SecuritySandbox,
+        acceptance_threshold: float = 0.8,
+        tool_registry: object | None = None,
     ) -> None:
         if acceptance_threshold < 0 or acceptance_threshold > 1:
             raise ValueError("acceptance_threshold must be in range 0..1")
         self.sandbox = sandbox
         self.acceptance_threshold = acceptance_threshold
+        # 注入 ToolRegistry 后，校验 Skill 引用的工具是否真实存在（避免沉淀引用了不存在工具的坏 Skill）。
+        self.tool_registry = tool_registry
 
     async def validate(
         self, skill: Skill, simulation_runs: int = 5
     ) -> SkillValidationResult:
         """
-        通过轻量沙箱模拟验证 Skill 是否可入库。
+        校验 Skill 是否可入库（结构完整性 + 工具真实可用性）。
 
-        功能说明：先检查 Skill 文本结构，再运行多次沙箱模拟，最后合成评分。
+        功能说明：结构分检查 Skill 文本是否规范；工具分校验 Skill 引用的工具是否都在
+            ToolRegistry 中真实存在（未注入 registry 时该项默认满分，退化为纯结构校验）。
         参数说明：
             skill：待验证的 Skill 对象。
-            simulation_runs：沙箱模拟次数，多次运行可以降低偶发错误影响。
+            simulation_runs：保留参数（向后兼容），当前不再跑沙箱空脚本。
         返回值：SkillValidationResult。
-        设计思路：结构分只能说明“写得像不像”，沙箱成功率说明“能不能安全执行验证流程”。
-        使用示例：await validator.validate(skill, simulation_runs=3)
-
-        🔍 原理讲解：
-        这里不是执行 Skill 的真实业务动作，而是跑一个最小安全脚本，确认沙箱链路可用。
-        举个例子：
-        输入 Skill → 结构评分 → 沙箱执行 validation_flag = True → 合成 score → 输出 accepted/rejected。
+        设计思路：替换原“跑 validation_flag=True 空脚本”的假校验——那只证明沙箱活着，
+            不证明 Skill 有用。真正有意义的准入是“结构规范 + 引用的工具真实存在”。
+        使用示例：await SkillValidator(sandbox, tool_registry=registry).validate(skill)
         """
         if not isinstance(skill, Skill):
             raise ValueError("skill must be a Skill instance")
         if simulation_runs <= 0:
             raise ValueError("simulation_runs must be positive")
         structural_score = self._structural_score(skill)
-        sandbox_successes = 0
-        for _ in range(simulation_runs):
-            # 💡 学习提示：这里用赋值语句而不是 print，是为了避免 RestrictedPython 对 print 的特殊警告干扰测试输出。
-            result = await self.sandbox.run_python("validation_flag = True")
-            if result.success:
-                sandbox_successes += 1
-        success_rate = sandbox_successes / simulation_runs
-        score = (
-            structural_score * 0.5 + success_rate * 0.5
-        )  # 💡 学习提示：结构质量和运行安全各占一半，避免只会写文档但跑不起来的 Skill 入库。
+        tool_score, missing = self._tool_availability_score(skill)
+        # 结构与工具可用性各占一半：只会写文档但引用了不存在工具的 Skill 不应入库。
+        score = structural_score * 0.5 + tool_score * 0.5
         accepted = (
             score >= self.acceptance_threshold
-            and success_rate >= self.acceptance_threshold
+            and tool_score >= self.acceptance_threshold
         )
-        reason = (
-            "accepted" if accepted else "score or sandbox success rate below threshold"
-        )
+        if accepted:
+            reason = "accepted"
+        elif missing:
+            reason = f"references unknown tools: {', '.join(missing)}"
+        else:
+            reason = "structural or tool-availability score below threshold"
         return SkillValidationResult(
-            success_rate=success_rate, score=score, accepted=accepted, reason=reason
+            success_rate=tool_score, score=score, accepted=accepted, reason=reason
         )
+
+    def _tool_availability_score(self, skill: Skill) -> tuple[float, list[str]]:
+        """
+        校验 Skill 引用的工具是否都在 ToolRegistry 中真实存在。
+
+        功能说明：从 skill.content 的 "Tools: a, b, c" 行解析工具名，逐一比对 registry。
+        返回值：(可用比例 0..1, 缺失工具列表)。未注入 registry 时返回 (1.0, [])。
+        """
+        if self.tool_registry is None:
+            return 1.0, []
+        available = set(getattr(self.tool_registry, "tools", {}).keys())
+        referenced = self._referenced_tools(skill.content)
+        if not referenced:
+            return 1.0, []  # 无外部工具的 Skill（纯分析步骤）默认满分
+        missing = [name for name in referenced if name not in available]
+        score = 1.0 - len(missing) / len(referenced)
+        return score, missing
+
+    @staticmethod
+    def _referenced_tools(content: str) -> list[str]:
+        """从 Skill 正文的 'Tools: ...' 行解析引用的工具名列表。"""
+        match = re.search(r"Tools:\s*(.+)", content)
+        if not match:
+            return []
+        raw = match.group(1).strip()
+        if not raw or raw.lower() == "no external tools":
+            return []
+        return [tool.strip() for tool in raw.split(",") if tool.strip()]
 
     def _structural_score(self, skill: Skill) -> float:
         """

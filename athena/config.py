@@ -193,15 +193,15 @@ class PrometheusSettings(BaseModel):
     """
     CloudOps Prometheus 查询设置。
 
-    功能说明：保存真实 Prometheus 接入开关、地址与超时；关闭时 K8s 诊断仍正常运行。
-    参数说明：enabled 控制是否查询 Prometheus；base_url 是 Prometheus HTTP API 地址；timeout_seconds 是查询超时。
+    功能说明：保存真实 Prometheus 接入开关、地址与超时；关闭或不可用时 K8s 诊断仍正常运行。
+    参数说明：enabled 控制是否查询 Prometheus；base_url 是 Prometheus HTTP API 地址（须 http(s)）；timeout_seconds 是查询超时。
     返回值：Pydantic 配置对象。
-    设计思路：默认关闭，保证本地无 Prometheus 时不影响 K8s 只读诊断；演示可用 mock://prometheus 打开确定性指标。
+    设计思路：不可用时返回 available=False（不阻断 K8s 诊断），绝不返回模拟指标值。
     使用示例：settings.ops.prometheus.enabled
     """
 
     enabled: bool = False
-    base_url: str = "mock://prometheus"
+    base_url: str = "http://127.0.0.1:9090"
     timeout_seconds: float = 5.0
 
 
@@ -232,23 +232,18 @@ class OpsSecuritySettings(BaseModel):
 
 class OpsSettings(BaseModel):
     """
-    云运维（CloudOps）设置：控制 K8s 诊断走 mock 还是真实集群。
+    云运维（CloudOps）设置：真实集群连接与安全治理（无 mock）。
 
-    功能说明：mode 决定数据来源，kubernetes 保存真实接入参数。
+    功能说明：kubernetes/prometheus 保存真实接入参数；诊断始终直连真实集群，
+        连接/调用失败直接报错，不返回任何模拟数据（彻底移除 Mock）。
     参数说明：
-        mode：mock 表示始终用演示数据；real 表示优先真实集群，缺 kubeconfig/连接失败自动降级 mock。
         kubernetes：真实集群连接与安全边界配置。
+        prometheus：真实 Prometheus 指标查询配置。
+        security：写操作安全治理。
     返回值：Pydantic 配置对象。
-    设计思路：新增独立配置段，旧 config.yaml 无 ops 段时用默认值（mock）仍能启动。
-    使用示例：settings.ops.mode
-
-    🎯 面试考点：为什么默认 mock？答案：无集群环境（CI、本地）也能跑通全链路，符合“自动降级”约束。
+    使用示例：settings.ops.kubernetes.kubeconfig
     """
 
-    mode: str = "mock"  # mock | real
-    # strict_real=False（默认）：real 连不上集群时静默降级 mock，保证演示不中断；
-    # strict_real=True：real 调用失败直接抛 OPS_REAL_UNAVAILABLE，不降级，暴露真实故障（生产建议）。
-    strict_real: bool = False
     # require_durable_audit=True：启动时若未配置 Redis（审计走内存后端，重启即丢）则报错，
     # 强制生产使用持久化审计；默认 False 保证 CI/本地零配置可跑。
     require_durable_audit: bool = False
@@ -363,10 +358,7 @@ def _apply_env_overrides(settings: AthenaSettings) -> AthenaSettings:
         if parsed:
             updated.security.api_keys = parsed
             updated.security.require_auth = True
-    # 云运维（K8s）常用环境变量注入，便于容器/CI 不改 YAML 切换 mock/real
-    ops_mode = os.getenv("ATHENA_OPS_MODE")
-    if ops_mode:
-        updated.ops.mode = ops_mode
+    # 云运维（K8s）常用环境变量注入，便于容器/CI 不改 YAML 切换目标集群
     k8s_kubeconfig = os.getenv("ATHENA_OPS_K8S_KUBECONFIG")
     if k8s_kubeconfig:
         updated.ops.kubernetes.kubeconfig = k8s_kubeconfig
@@ -403,9 +395,6 @@ def _apply_env_overrides(settings: AthenaSettings) -> AthenaSettings:
             "yes",
             "on",
         }
-    strict_real = os.getenv("ATHENA_OPS_STRICT_REAL")
-    if strict_real:
-        updated.ops.strict_real = strict_real.lower() in {"1", "true", "yes", "on"}
     require_durable_audit = os.getenv("ATHENA_OPS_REQUIRE_DURABLE_AUDIT")
     if require_durable_audit:
         updated.ops.require_durable_audit = require_durable_audit.lower() in {

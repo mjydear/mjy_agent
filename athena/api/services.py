@@ -24,7 +24,6 @@ from athena.agent import (
     WorkflowEngine,
 )
 from athena.agent.base import AgentResponse
-from athena.agent.workflows import FaultDiagnoseWorkflow
 from athena.api.schemas import (
     BenchmarkReportResponse,
     BenchmarkRunResponse,
@@ -44,12 +43,6 @@ from athena.evaluation import BenchmarkCase, BenchmarkEngine, BenchmarkReport
 from athena.learning.tracer import Tracer
 from athena.memory.ops_knowledge import OpsKnowledgeBase
 from athena.observability.metrics import RuntimeMetrics
-from athena.tools.builtin.cloud import (
-    AliyunClient,
-    AWSClient,
-    CloudOperationResult,
-    TencentCloudClient,
-)
 from athena.tools.cloud.k8s import (
     EvidenceBoundReportSummarizer,
     K8sActionSecurityPolicy,
@@ -189,6 +182,9 @@ class AthenaWebService:
         benchmark_store: "BenchmarkStore | None" = None,
         audit_store: "object | None" = None,
         k8s_diagnoser: "K8sReadOnlyDiagnoser | None" = None,
+        cloud_agent_factory: "Callable[[str], ReActAgent] | None" = None,
+        skill_library: "object | None" = None,
+        feedback_store: "object | None" = None,
     ) -> None:
         if session_ttl_seconds <= 0:
             raise ValueError("session_ttl_seconds must be positive")
@@ -233,6 +229,13 @@ class AthenaWebService:
         # K8s 只读诊断器：注入优先，否则惰性从 settings.ops 构建（mock/real 由配置决定，
         # 连不上真实集群自动降级 mock）。惰性构建避免无 K8s 场景也读配置。
         self._k8s_diagnoser = k8s_diagnoser
+        # 云运维 Agent 工厂：按 actor 构造一个装配了 K8s/Prometheus/写预览工具的 ReActAgent。
+        # 缺省时惰性从 build_cloud_agent 构造，使云运维诊断真正走 Agent 大脑自主编排。
+        self._cloud_agent_factory = cloud_agent_factory
+        # 技能库：注入后云运维 Agent 召回已学 Skill 注入 prompt（阶段②-D），并供 Curator 进化写入。
+        self.skill_library = skill_library
+        # 人工反馈存储：采集采纳/修正/否决，驱动 Skill 修正与真实成功标记（阶段②-B）。
+        self.feedback_store = feedback_store
         self._alert_history: list[dict[str, object]] = []
 
     def create_session(self, title: str | None = None) -> SessionDetail:
@@ -561,8 +564,8 @@ class AthenaWebService:
             return {"valid": True, "checked": 0, "broken_at": None, "head": 0}
         return store.verify_chain()
 
-    def ingest_alert(self, payload: dict[str, object]) -> dict[str, object]:
-        """接收 Alertmanager webhook，转换为 CloudOps 诊断任务并写入审计链。"""
+    async def ingest_alert(self, payload: dict[str, object]) -> dict[str, object]:
+        """接收 Alertmanager webhook，转换为 Agent 诊断任务并写入审计链。"""
         from athena.integration.alert_webhook import AlertWebhookParser
 
         alert = AlertWebhookParser().parse(payload)
@@ -573,15 +576,21 @@ class AthenaWebService:
         playbook = self._select_alert_playbook(alert.alert_name, alert.labels)
         diagnosis_task = self._alert_diagnosis_task(alert.alert_name, namespace)
         report = diagnoser.build_report(namespace, include_logs=True)
-        workflow = FaultDiagnoseWorkflow(knowledge=self.ops_knowledge).run(
-            alert.alert_name
+        # 告警转诊断任务，交给云运维 Agent 大脑自主排查（替换原写死 FaultDiagnoseWorkflow）。
+        agent = self._get_cloud_agent("alertmanager")
+        agent_response = await agent.run(diagnosis_task)
+        success = bool(agent_response.answer and agent_response.answer.strip())
+        knowledge_id = self.ops_knowledge.record_case(
+            alert.alert_name,
+            agent_response.answer or "no conclusion",
+            "see agent diagnosis",
+            success,
         )
-        workflow_payload = {
-            "run_id": workflow.run_id,
-            "status": workflow.status,
-            "summary": workflow.summary,
-            "knowledge_id": workflow.knowledge_id,
-            "steps": [step.__dict__ for step in workflow.steps],
+        diagnosis_payload = {
+            "status": "success" if success else "failed",
+            "summary": agent_response.answer,
+            "knowledge_id": knowledge_id,
+            "steps": agent_response.steps,
         }
         record: dict[str, object] = {
             "status": "processed",
@@ -595,7 +604,7 @@ class AthenaWebService:
             "playbook": playbook,
             "diagnosis_task": diagnosis_task,
             "readonly_report": report.to_dict(),
-            "workflow": workflow_payload,
+            "diagnosis": diagnosis_payload,
         }
         self._alert_history.insert(0, record)
         self._alert_history = self._alert_history[:50]
@@ -611,7 +620,7 @@ class AthenaWebService:
             "alert.processed",
             alert.alert_name,
             True,
-            f"findings={len(report.findings)};workflow={workflow.run_id}",
+            f"findings={len(report.findings)};knowledge={knowledge_id}",
         )
         return record
 
@@ -709,22 +718,12 @@ class AthenaWebService:
             CloudOpsMode(
                 mode="k8s",
                 title="K8s 运维",
-                description="Pod/节点/事件查询与常见故障 SOP 诊断",
-            ),
-            CloudOpsMode(
-                mode="resource",
-                title="资源巡检",
-                description="云实例、安全组和监控指标核查",
+                description="Agent 自主编排：Pod/节点/事件/日志 + Prometheus 指标的证据型诊断",
             ),
             CloudOpsMode(
                 mode="fault",
                 title="故障排查",
-                description="告警到根因分析、修复建议、沙箱验证和知识沉淀",
-            ),
-            CloudOpsMode(
-                mode="cost",
-                title="成本优化",
-                description="闲置资源识别、低效配置分析和优化收益预估",
+                description="Agent 大脑驱动：告警到根因分析、修复建议与经验沉淀",
             ),
         ]
 
@@ -739,11 +738,11 @@ class AthenaWebService:
         """
         运行一个 CloudOps 场景并记录轨迹。
 
-        功能说明：创建任务记录，分发到具体子模式，更新指标，并返回统一响应。
-        参数说明：mode 是 k8s/resource/fault/cost；task 是用户输入；provider 是云厂商；confirmed 是高危确认标记。
+        功能说明：创建任务记录，分发到 k8s/fault 子模式（均由 Agent 大脑编排），更新指标并返回。
+        参数说明：mode 是 k8s/fault；task 是用户输入；provider 保留兼容参数；confirmed 是高危确认标记。
         返回值：CloudOpsResponse。
         设计思路：这是 CloudOps 的服务层总入口，API 路由和前端都不需要知道每个子模式内部怎么做。
-        使用示例：await service.run_cloud_ops("cost", provider="aliyun")
+        使用示例：await service.run_cloud_ops("k8s", task="诊断 default 命名空间")
 
         🔍 原理讲解：
         这个方法像一个“任务外壳”：先建 task_id 和 TaskRecord，再把实际工作交给 _dispatch_cloud_ops。
@@ -754,8 +753,8 @@ class AthenaWebService:
         record = TaskRecord(task_id=task_id, status="running")
         self.task_store.save(record)
         try:
-            answer, steps, data, requires_confirmation = self._dispatch_cloud_ops(
-                mode, task, provider, confirmed, actor
+            answer, steps, data, requires_confirmation = await self._dispatch_cloud_ops(
+                mode, task, provider, confirmed, actor, task_id
             )
             operation_success = self._cloud_operation_success(
                 data, requires_confirmation
@@ -854,6 +853,52 @@ class AthenaWebService:
             }
         )
 
+    def submit_feedback(
+        self, task_id: str, verdict: str, correction_text: str = ""
+    ) -> dict[str, object]:
+        """
+        采集人工对诊断结论的反馈（采纳/修正/否决），驱动 Skill 自进化（阶段②-B）。
+
+        功能说明：把反馈写入 FeedbackStore；否决/修正会在后台 Curator 进化时降权/修正对应 Skill。
+        参数说明：task_id 被反馈任务；verdict adopt|correct|reject；correction_text 修正内容。
+        返回值：反馈受理结果字典。
+        设计思路：反馈是自进化闭环里最高质量的监督信号，必须持久化且可按 task 检索。
+        使用示例：service.submit_feedback("cloud-k8s-x", "correct", "根因是镜像 tag 错误")
+        """
+        if self.feedback_store is None:
+            from athena.memory.feedback import FeedbackStore
+
+            self.feedback_store = FeedbackStore()
+        try:
+            item = self.feedback_store.record(task_id, verdict, correction_text)
+        except ValueError as exc:
+            raise ApiServiceError("FEEDBACK_INVALID", str(exc)) from exc
+        self._audit(
+            "user", "cloud_ops.feedback", task_id, True, f"verdict={item.verdict}"
+        )
+        return {
+            "feedback_id": item.feedback_id,
+            "task_id": item.task_id,
+            "verdict": item.verdict,
+        }
+
+    def list_feedback(self, limit: int = 50) -> dict[str, object]:
+        """返回最近的人工反馈记录。"""
+        if self.feedback_store is None:
+            return {"items": []}
+        return {
+            "items": [
+                {
+                    "feedback_id": i.feedback_id,
+                    "task_id": i.task_id,
+                    "verdict": i.verdict,
+                    "correction_text": i.correction_text,
+                    "created_at": i.created_at,
+                }
+                for i in self.feedback_store.list(limit)
+            ]
+        }
+
     def search_ops_knowledge(self, query: str) -> dict[str, object]:
         """
         检索 CloudOps 运维知识。
@@ -867,26 +912,28 @@ class AthenaWebService:
         items = self.ops_knowledge.search(query)
         return {"query": query, "items": [item.__dict__ for item in items]}
 
-    def _dispatch_cloud_ops(
-        self, mode: str, task: str, provider: str, confirmed: bool, actor: str = "system"
+    async def _dispatch_cloud_ops(
+        self,
+        mode: str,
+        task: str,
+        provider: str,
+        confirmed: bool,
+        actor: str = "system",
+        task_id: str = "",
     ) -> tuple[str, list[StepTrace], dict[str, object], bool]:
         """
         根据 mode 分发到具体 CloudOps 子场景。
 
-        功能说明：把统一入口请求路由到 K8s、资源、故障或成本处理函数。
-        参数说明：mode 是子模式；task 是任务文本；provider 是云厂商；confirmed 是确认标记。
+        功能说明：把统一入口请求路由到 K8s 诊断或故障排查（均由 Agent 大脑自主编排）。
+        参数说明：mode 是子模式；task 是任务文本；confirmed 是确认标记；task_id 作为 trace run_id。
         返回值：answer、steps、data、requires_confirmation 四元组。
-        设计思路：这里是服务层内部的“策略选择器”，每个子模式仍保持独立私有方法。
-        使用示例：self._dispatch_cloud_ops("k8s", "", "aliyun", False)
+        设计思路：CloudOps 收敛为 k8s 诊断 + 告警排障，两者都走 Agent，不再有绕开大脑的写死 SOP。
+        使用示例：await self._dispatch_cloud_ops("k8s", "", "aliyun", False, "public", "cloud-k8s-x")
         """
         if mode == "k8s":
-            return self._run_k8s_ops(task, confirmed, actor)
-        if mode == "resource":
-            return self._run_resource_ops(task, provider, confirmed)
+            return await self._run_k8s_ops(task, confirmed, actor, task_id)
         if mode == "fault":
-            return self._run_fault_ops(task)
-        if mode == "cost":
-            return self._run_cost_ops(provider)
+            return await self._run_fault_ops(task, actor, task_id)
         raise ApiServiceError(
             "CLOUD_MODE_UNSUPPORTED", f"Unsupported cloud ops mode: {mode}"
         )
@@ -906,6 +953,29 @@ class AthenaWebService:
 
             self._k8s_diagnoser = K8sReadOnlyDiagnoser.from_settings(load_settings())
         return self._k8s_diagnoser
+
+    def _get_cloud_agent(self, actor: str = "system") -> ReActAgent:
+        """
+        获取一个云运维 ReActAgent（顶层大脑）。
+
+        功能说明：优先用注入的 cloud_agent_factory（测试可注入假 Agent），否则惰性
+            调用 build_cloud_agent 从 settings 装配含 K8s/Prometheus/写预览工具的 Agent。
+        参数说明：actor 透传给写操作安全元数据。
+        返回值：可 run() 的云运维 ReActAgent（每次新建，隔离工作记忆与 trace run）。
+        设计思路：让云运维诊断真正走 Agent 自主编排，而非服务层写死 SOP。
+        使用示例：agent = self._get_cloud_agent("public")
+        """
+        if self._cloud_agent_factory is not None:
+            return self._cloud_agent_factory(actor)
+        from athena.cli.main import build_cloud_agent
+        from athena.config import load_settings
+
+        return build_cloud_agent(
+            load_settings(),
+            actor=actor,
+            tracer=self.tracer,  # 注入 Tracer：Agent 每步落 trace，供 Skill 自进化（阶段②-A）
+            skill_library=self.skill_library,  # 注入技能库：召回已学 Skill 注入 prompt（阶段②-D）
+        )
 
     @staticmethod
     def _parse_k8s_namespace(task: str, allowlist: tuple[str, ...]) -> str:
@@ -947,125 +1017,138 @@ class AthenaWebService:
             return "default" if "default" in allowlist else allowlist[0]
         return parsed
 
-    def _run_k8s_ops(
-        self, task: str = "", confirmed: bool = False, actor: str = "system"
+    async def _run_k8s_ops(
+        self,
+        task: str = "",
+        confirmed: bool = False,
+        actor: str = "system",
+        task_id: str = "",
     ) -> tuple[str, list[StepTrace], dict[str, object], bool]:
         """
-        执行 K8s 运维巡检场景。
+        执行 K8s 运维场景：写操作走确认护栏，只读诊断走 Agent 大脑自主编排。
 
-        功能说明：收集集群快照，运行 K8s 诊断器，解析目标命名空间并输出结构化诊断报告。
-        参数说明：task 用户输入文本，用于解析目标命名空间（缺省诊断 default）。
-        返回值：answer、steps、data、requires_confirmation=False。
-        设计思路：K8s 巡检是只读场景，不需要人工确认，但要把诊断结果结构化返回（阶段 2 报告模型）。
-        使用示例：answer, steps, data, confirm = self._run_k8s_ops("诊断 prod 命名空间")
+        功能说明：
+            - 若识别到写意图，走确定性写操作护栏（preview → 人工确认 → execute → verify），
+              该路径不经过 LLM，保证“写操作必须人工确认”这条安全边界不被绕过（阶段①-C）。
+            - 否则由云运维 ReActAgent 自主规划、调用 K8s/Prometheus 只读工具完成端到端诊断，
+              并附带结构化报告供前端右侧面板展示（阶段①-B）。
+        参数说明：task 用户输入；confirmed 高危确认标记；actor 操作者；task_id 作为 trace run_id。
+        返回值：answer、steps、data、requires_confirmation。
+        使用示例：await self._run_k8s_ops("诊断 prod 命名空间", task_id="cloud-k8s-x")
         """
-        # 只读诊断器：基于 settings.ops 的 mock/real 客户端做证据聚合诊断（含事件+日志）。
+        # 只读诊断器：作为“证据采集原子能力”，同时供写执行器复用其 client 做 patch/verify。
         readonly_diagnoser = self._get_k8s_readonly_diagnoser()
         namespace = self._parse_k8s_namespace(
             task, readonly_diagnoser.client.namespace_allowlist
         )
-        cloud_status = self._k8s_cloud_status(readonly_diagnoser, namespace)
+
+        # ---- 写操作确认护栏（确定性路径，不经 LLM）----
+        write_result = self._handle_k8s_write_action(
+            readonly_diagnoser, task, namespace, confirmed, actor
+        )
+        if write_result is not None:
+            return write_result
+
+        # ---- 只读诊断：Agent 大脑自主编排 ----
+        agent = self._get_cloud_agent(actor)
+        diagnosis_task = task.strip() or f"诊断 {namespace} 命名空间的 K8s 故障"
+        response = await agent.run(diagnosis_task, run_id=task_id or None)
+        steps = self._steps_from_strings(response.steps)
+
+        # 结构化报告仍由只读诊断器产出，供前端分区展示（summary/metrics/actions/raw_evidence）。
+        readonly_findings = readonly_diagnoser.as_dicts(namespace, include_logs=True)
+        report = readonly_diagnoser.build_report(namespace, include_logs=True)
+        readonly_report = report.to_dict()
+        return (
+            response.answer,
+            steps,
+            {
+                "namespace": namespace,
+                "cloud_status": self._k8s_cloud_status(
+                    readonly_diagnoser, namespace, readonly_report
+                ),
+                "readonly_findings": readonly_findings,
+                "readonly_report": readonly_report,
+            },
+            False,
+        )
+
+    def _handle_k8s_write_action(
+        self,
+        readonly_diagnoser: K8sReadOnlyDiagnoser,
+        task: str,
+        namespace: str,
+        confirmed: bool,
+        actor: str,
+    ) -> tuple[str, list[StepTrace], dict[str, object], bool] | None:
+        """
+        处理 K8s 写操作确认护栏（确定性路径）。
+
+        功能说明：预览写操作；被安全策略拦截 / 需确认未确认 / 已确认执行 三种结果分别返回；
+            读意图返回 None 让上层走 Agent 只读诊断。
+        参数说明：readonly_diagnoser 复用其 client；task/namespace/confirmed/actor 见调用方。
+        返回值：写操作四元组或 None（非写意图）。
+        设计思路：把“preview→确认→execute→verify→审计”固化为不经 LLM 的确定性路径（阶段①-C）。
+        """
         from athena.config import load_settings
 
+        cloud_status = self._k8s_cloud_status(readonly_diagnoser, namespace)
         action_executor = K8sWriteActionExecutor(
             readonly_diagnoser.client,
             K8sActionSecurityPolicy.from_settings(load_settings().ops.security),
             actor=actor,
         )
         action_preview = action_executor.preview(task, namespace)
-        if action_preview is not None:
-            if action_preview.requires_confirmation and action_preview.plan is not None and confirmed:
-                action_result = action_executor.execute(action_preview.plan)
-                steps = [
-                    StepTrace(
-                        step_index=1,
-                        event_type="preview",
-                        content=action_preview.plan.command_preview,
-                    ),
-                    StepTrace(
-                        step_index=2,
-                        event_type="execute",
-                        content=action_result.message,
-                    ),
-                    StepTrace(
-                        step_index=3,
-                        event_type="verify",
-                        content="Read deployment state after write action",
-                    ),
-                ]
-                return (
-                    action_result.message,
-                    steps,
-                    {
-                        "cloud_status": cloud_status,
-                        "k8s_action": action_result.to_dict(),
-                    },
-                    False,
-                )
+        if action_preview is None:
+            return None
+
+        if (
+            action_preview.requires_confirmation
+            and action_preview.plan is not None
+            and confirmed
+        ):
+            action_result = action_executor.execute(action_preview.plan)
             steps = [
                 StepTrace(
                     step_index=1,
                     event_type="preview",
-                    content=(
-                        action_preview.plan.command_preview
-                        if action_preview.plan is not None
-                        else action_preview.message
-                    ),
+                    content=action_preview.plan.command_preview,
                 ),
                 StepTrace(
-                    step_index=2,
-                    event_type="safety",
-                    content=action_preview.message,
+                    step_index=2, event_type="execute", content=action_result.message
+                ),
+                StepTrace(
+                    step_index=3,
+                    event_type="verify",
+                    content="Read deployment state after write action",
                 ),
             ]
             return (
-                action_preview.message,
+                action_result.message,
                 steps,
-                {
-                    "cloud_status": cloud_status,
-                    "k8s_action": action_preview.to_dict(),
-                },
-                action_preview.requires_confirmation,
+                {"cloud_status": cloud_status, "k8s_action": action_result.to_dict()},
+                False,
             )
 
-        readonly_findings = readonly_diagnoser.as_dicts(namespace, include_logs=True)
-        # 阶段 2：结构化诊断报告（summary/metrics/actions/raw_evidence），供前端分区展示。
-        report = readonly_diagnoser.build_report(namespace, include_logs=True)
-        readonly_report = report.to_dict()
         steps = [
             StepTrace(
                 step_index=1,
-                event_type="collect",
+                event_type="preview",
                 content=(
-                    f"Collected pod, node, event, and usage snapshot "
-                    f"for namespace={namespace}"
+                    action_preview.plan.command_preview
+                    if action_preview.plan is not None
+                    else action_preview.message
                 ),
             ),
             StepTrace(
-                step_index=2,
-                event_type="analyze",
-                content=(
-                    f"Read-only diagnoser produced {len(readonly_findings)} "
-                    "evidence-backed findings"
-                ),
-            ),
-            StepTrace(
-                step_index=3,
-                event_type="recommend",
-                content="Prioritize CrashLoopBackOff logs and ImagePullBackOff registry checks",
+                step_index=2, event_type="safety", content=action_preview.message
             ),
         ]
-        answer = EvidenceBoundReportSummarizer.deterministic_summary(report)
         return (
-            answer,
+            action_preview.message,
             steps,
-            {
-                "namespace": namespace,
-                "cloud_status": self._k8s_cloud_status(readonly_diagnoser, namespace, readonly_report),
-                "readonly_findings": readonly_findings,
-                "readonly_report": readonly_report,
-            },
-            False,
+            {"cloud_status": cloud_status, "k8s_action": action_preview.to_dict()},
+            action_preview.requires_confirmation,
         )
 
     @staticmethod
@@ -1085,10 +1168,9 @@ class AthenaWebService:
         )
         namespace_scope = list(client.namespace_allowlist) or ["*"]
         return {
-            "mode": client.mode,
-            "source": "real" if client.mode == "real" else "mock",
-            # real 模式下若发生自动降级为 True，供前端标注“real(降级 mock)”；mock 模式恒 False。
-            "degraded": bool(getattr(client, "last_call_degraded", False)),
+            # 真实链路，无 mock：source 恒为 real，不存在降级。
+            "source": "real",
+            "degraded": False,
             "k8s_context": client.context or "default",
             "namespace": namespace,
             "namespace_scope": namespace_scope,
@@ -1099,171 +1181,35 @@ class AthenaWebService:
             },
         }
 
-    def _run_resource_ops(
-        self, task: str, provider: str, confirmed: bool
+    async def _run_fault_ops(
+        self, task: str, actor: str = "system", task_id: str = ""
     ) -> tuple[str, list[StepTrace], dict[str, object], bool]:
         """
-        执行云资源巡检或高危资源操作。
+        执行故障自动排查场景（Agent 大脑驱动）。
 
-        功能说明：普通任务做实例/安全组/监控检查；包含 restart/重启 时触发高危重启流程。
-        参数说明：task 是用户输入；provider 是云厂商；confirmed 是人工确认状态。
-        返回值：answer、steps、data、requires_confirmation。
-        设计思路：用任务关键词触发高危操作是 MVP 简化，真实系统应由意图识别或结构化命令触发。
-        使用示例：self._run_resource_ops("restart instance", "aliyun", False)
-        """
-        client = self._cloud_client(provider)
-        if "restart" in task.lower() or "重启" in task:
-            # 💡 学习提示：这里故意把重启走工具层 confirmed 检查，前端按钮只是交互，真正安全边界在后端工具。
-            result = client.restart_instance("i-prod-api-01", confirmed=confirmed)
-            steps = self._steps_from_cloud_result(result)
-            return (
-                result.message,
-                steps,
-                {"operation": result.__dict__},
-                result.requires_confirmation,
-            )
-        instances = client.list_instances()
-        security = client.check_security_groups()
-        metrics = client.fetch_monitoring_metrics()
-        steps = [
-            StepTrace(
-                step_index=1, event_type="inspect", content="Listed cloud instances"
-            ),
-            StepTrace(
-                step_index=2,
-                event_type="security",
-                content="Checked security group exposure",
-            ),
-            StepTrace(
-                step_index=3, event_type="metrics", content="Fetched monitoring metrics"
-            ),
-        ]
-        answer = "资源巡检完成：发现 1 条高风险 SSH 暴露规则和 1 台低利用率实例。"
-        return (
-            answer,
-            steps,
-            {
-                "instances": instances.data,
-                "security": security.data,
-                "metrics": metrics.data,
-            },
-            False,
-        )
-
-    def _run_fault_ops(
-        self, task: str
-    ) -> tuple[str, list[StepTrace], dict[str, object], bool]:
-        """
-        执行故障自动排查场景。
-
-        功能说明：启动 FaultDiagnoseWorkflow，并把工作流步骤转换成 Web StepTrace。
-        参数说明：task 通常是告警名，空时使用 KubePodCrashLooping。
+        功能说明：把告警/故障描述作为诊断任务下发给云运维 ReActAgent，由其自主串联
+            K8s + Prometheus 证据定位根因；结果真实成功/失败入运维知识库。
+        参数说明：task 通常是告警名或故障描述，空时使用 KubePodCrashLooping；task_id 作 trace run_id。
         返回值：answer、steps、data、requires_confirmation=False。
-        设计思路：故障排查工作流负责业务闭环，服务层只负责适配 API 响应格式。
-        使用示例：self._run_fault_ops("KubePodCrashLooping")
+        设计思路：替换原写死的 FaultDiagnoseWorkflow SOP，让排障也走 Agent 自主规划（阶段①-B）。
+        使用示例：await self._run_fault_ops("KubePodCrashLooping")
         """
-        workflow = FaultDiagnoseWorkflow(knowledge=self.ops_knowledge)
-        result = workflow.run(task or "KubePodCrashLooping")
-        steps = [
-            StepTrace(step_index=index, event_type=step.name, content=step.detail)
-            for index, step in enumerate(result.steps, start=1)
-        ]
+        alert = task.strip() or "KubePodCrashLooping"
+        agent = self._get_cloud_agent(actor)
+        diagnosis_task = f"排查告警 {alert}，定位根因并给出修复建议"
+        response = await agent.run(diagnosis_task, run_id=task_id or None)
+        steps = self._steps_from_strings(response.steps)
+        # 真实结果入知识库：成功与否由 Agent 是否给出非空结论近似判断（人工反馈可进一步修正，阶段②-B）。
+        success = bool(response.answer and response.answer.strip())
+        knowledge_id = self.ops_knowledge.record_case(
+            alert, response.answer or "no conclusion", "see agent diagnosis", success
+        )
         return (
-            result.summary,
+            response.answer,
             steps,
-            {
-                "run_id": result.run_id,
-                "knowledge_id": result.knowledge_id,
-                "steps": [step.__dict__ for step in result.steps],
-            },
+            {"alert": alert, "knowledge_id": knowledge_id},
             False,
         )
-
-    def _run_cost_ops(
-        self, provider: str
-    ) -> tuple[str, list[StepTrace], dict[str, object], bool]:
-        """
-        执行云成本优化分析。
-
-        功能说明：扫描实例利用率，识别 CPU 小于 5% 的闲置资源，并估算月度节省金额。
-        参数说明：provider 是云厂商标识。
-        返回值：answer、steps、data、requires_confirmation=False。
-        设计思路：成本优化先用简单阈值法，便于解释；未来可接账单 API 和更复杂规则。
-        使用示例：self._run_cost_ops("aliyun")
-        """
-        client = self._cloud_client(provider)
-        instances = client.list_instances().data["instances"]
-        idle = [
-            instance for instance in instances if float(instance["cpu"]) < 5.0
-        ]  # 💡 学习提示：5% 是演示阈值，真实成本优化应结合业务低峰和实例规格。
-        monthly_saving = (
-            len(idle) * 320
-        )  # 💡 学习提示：固定 320 元/月是估算常量，方便 demo 有清晰数字。
-        steps = [
-            StepTrace(
-                step_index=1,
-                event_type="collect",
-                content="Collected instance utilization",
-            ),
-            StepTrace(
-                step_index=2,
-                event_type="analyze",
-                content=f"Detected {len(idle)} idle resources",
-            ),
-            StepTrace(
-                step_index=3,
-                event_type="report",
-                content=f"Estimated monthly saving: {monthly_saving} CNY",
-            ),
-        ]
-        answer = f"成本优化完成：发现 {len(idle)} 台闲置实例，预计每月节省 {monthly_saving} 元。"
-        return (
-            answer,
-            steps,
-            {"idle_resources": idle, "estimated_monthly_saving_cny": monthly_saving},
-            False,
-        )
-
-    def _cloud_client(self, provider: str) -> AliyunClient:
-        """
-        根据 provider 创建云厂商客户端。
-
-        功能说明：支持 aliyun/tencent/aws 三种演示客户端。
-        参数说明：provider 是云厂商字符串。
-        返回值：云客户端实例，类型兼容 AliyunClient 演示接口。
-        设计思路：用统一客户端接口屏蔽云厂商差异，上层 resource/cost 逻辑无需关心具体厂商。
-        使用示例：client = self._cloud_client("tencent")
-        """
-        if provider == "tencent":
-            return TencentCloudClient()
-        if provider == "aws":
-            return AWSClient()
-        return AliyunClient()
-
-    def _steps_from_cloud_result(self, result: CloudOperationResult) -> list[StepTrace]:
-        """
-        把云操作结果转换成 Web 轨迹步骤。
-
-        功能说明：根据 CloudOperationResult 生成一条 StepTrace。
-        参数说明：result 是工具层统一返回对象。
-        返回值：StepTrace 列表。
-        设计思路：工具层结果和 Web 轨迹模型解耦，中间由服务层做格式适配。
-        使用示例：steps = self._steps_from_cloud_result(result)
-        """
-        status = (
-            "waiting_confirmation"
-            if result.requires_confirmation
-            else ("success" if result.success else "failed")
-        )
-        return [
-            StepTrace(
-                step_index=1,
-                event_type="cloud_operation",
-                content=f"{result.operation}: {result.message}",
-                status=status,
-                duration_ms=result.duration_ms,
-            )
-        ]
 
     def cleanup_expired_sessions(self) -> None:
         """

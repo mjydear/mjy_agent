@@ -1,9 +1,9 @@
 """
 📦 模块名称：CloudOps Prometheus 查询客户端
 📍 架构位置：CloudOps 工具层，位于 K8s Playbook 与 Prometheus HTTP API 之间。
-🎯 核心作用：封装常用 PromQL 查询，真实 Prometheus 不可用时降级为“指标不可用/Mock”。
+🎯 核心作用：封装常用 PromQL 查询，直连真实 Prometheus；不可用时返回“指标不可用”（无 mock 数据）。
 🔗 依赖关系：仅依赖标准库 urllib/json；被 K8sReadOnlyDiagnoser 注入使用。
-💡 设计思路：保持只读、可选、可降级；Playbook 只消费结构化指标结果，不直接拼 HTTP 请求。
+💡 设计思路：保持只读、可选；Prometheus 不可用不阻断 K8s 诊断，但绝不返回模拟指标值。
 """
 
 from __future__ import annotations
@@ -48,10 +48,10 @@ class PrometheusQueryClient:
     """
     Prometheus 只读查询客户端。
 
-    功能说明：提供常用 Pod/Service 指标查询，支持真实 HTTP 查询和 mock/不可用降级。
-    参数说明：enabled 控制是否启用；base_url 是 Prometheus 地址；timeout_seconds 是 HTTP 超时。
+    功能说明：提供常用 Pod/Service 指标查询，直连真实 Prometheus HTTP API。
+    参数说明：enabled 控制是否启用；base_url 是 Prometheus 地址（必须 http(s)）；timeout_seconds 是 HTTP 超时。
     返回值：各方法返回 PrometheusQueryResult。
-    设计思路：enabled=false 时返回 unavailable，不影响 K8s 诊断；base_url=mock://prometheus 时返回演示值。
+    设计思路：enabled=false 或不可用时返回 available=False，不影响 K8s 诊断；绝不返回模拟指标值。
     使用示例：client.pod_cpu_usage("default", "api")
     """
 
@@ -59,7 +59,7 @@ class PrometheusQueryClient:
         self,
         *,
         enabled: bool = False,
-        base_url: str = "mock://prometheus",
+        base_url: str = "http://127.0.0.1:9090",
         timeout_seconds: float = 5.0,
     ) -> None:
         if timeout_seconds <= 0:
@@ -82,7 +82,7 @@ class PrometheusQueryClient:
         """
         执行单个 PromQL 查询。
 
-        功能说明：disabled 返回 unavailable；mock 返回确定性值；http(s) 真实查询失败时返回 unavailable。
+        功能说明：disabled 返回 unavailable；非 http(s) base_url 返回 unavailable；真实查询失败返回 unavailable（无 mock）。
         参数说明：name 指标名；promql 查询表达式；unit 展示单位。
         返回值：PrometheusQueryResult。
         设计思路：Prometheus 不可用不应阻断 K8s 诊断，所以失败转换为结构化不可用结果。
@@ -101,7 +101,15 @@ class PrometheusQueryClient:
                 error="prometheus disabled",
             )
         if not self.base_url.startswith(("http://", "https://")):
-            return self._mock_query(name, promql, unit)
+            return PrometheusQueryResult(
+                name=name,
+                query=promql,
+                value=None,
+                source=self.base_url,
+                available=False,
+                unit=unit,
+                error="prometheus base_url must be http(s); no mock data",
+            )
         try:
             return self._real_query(name, promql, unit)
         except Exception as exc:
@@ -235,25 +243,6 @@ class PrometheusQueryClient:
             name=name,
             query=promql,
             value=value,
-            source=self.base_url,
-            available=True,
-            unit=unit,
-        )
-
-    def _mock_query(self, name: str, promql: str, unit: str) -> PrometheusQueryResult:
-        values = {
-            "pod_cpu_usage": 0.92,
-            "pod_memory_usage": 880 * 1024 * 1024,
-            "pod_restart_count": 7.0,
-            "http_5xx_error_rate": 0.12,
-            "request_latency_p95": 1.8,
-            "request_latency_p99": 2.7,
-            "service_availability": 0.96,
-        }
-        return PrometheusQueryResult(
-            name=name,
-            query=promql,
-            value=values.get(name, 1.0),
             source=self.base_url,
             available=True,
             unit=unit,

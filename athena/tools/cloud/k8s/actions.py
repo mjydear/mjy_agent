@@ -367,8 +367,6 @@ class K8sWriteActionExecutor:
         return 1
 
     def _rollout_restart(self, namespace: str, deployment: str) -> None:
-        if self.client.mode != "real":
-            return
         api = self.client._get_apps_api()
         body = {
             "spec": {
@@ -384,8 +382,6 @@ class K8sWriteActionExecutor:
         api.patch_namespaced_deployment(deployment, namespace, body=body, _request_timeout=self.client.timeout)  # type: ignore[attr-defined]
 
     def _scale(self, namespace: str, deployment: str, replicas: int) -> None:
-        if self.client.mode != "real":
-            return
         api = self.client._get_apps_api()
         api.patch_namespaced_deployment_scale(  # type: ignore[attr-defined]
             deployment,
@@ -395,8 +391,6 @@ class K8sWriteActionExecutor:
         )
 
     def _set_paused(self, namespace: str, deployment: str, paused: bool) -> None:
-        if self.client.mode != "real":
-            return
         api = self.client._get_apps_api()
         api.patch_namespaced_deployment(  # type: ignore[attr-defined]
             deployment,

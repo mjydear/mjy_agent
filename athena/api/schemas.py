@@ -314,10 +314,10 @@ class CloudOpsRequest(BaseModel):
     CloudOps 场景运行请求。
 
     功能说明：描述前端触发一次云运维任务所需的参数。
-    参数说明：mode 是子模式；task 是用户任务；provider 是云厂商；confirmed 表示是否已人工确认高危操作。
+    参数说明：mode 是子模式（k8s/fault）；task 是用户任务；provider 保留兼容参数；confirmed 表示是否已人工确认高危操作。
     返回值：请求模型本身不返回，由路由传给服务层。
-    设计思路：四个子模式共用同一个请求模型，MVP 阶段接口更简单；差异参数以后可逐步拆分。
-    使用示例：CloudOpsRequest(mode="resource", task="restart instance", confirmed=True)
+    设计思路：k8s/fault 子模式共用同一个请求模型，均由 Agent 大脑编排。
+    使用示例：CloudOpsRequest(mode="k8s", task="namespace=default rollout restart deployment checkout", confirmed=True)
 
     🎯 面试考点：为什么 confirmed 放在请求体里？答案：它是一次操作的安全状态，必须随请求传到后端，不能只存在前端按钮状态里。
     """

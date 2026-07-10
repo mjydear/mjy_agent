@@ -250,6 +250,78 @@ Athena 当前的云运维模式已经具备 Web Console、API、Agent 执行链�
 
 ## 阶段 10：测试与验收
 
+- [x] 单元测试：
+  - [x] K8s client
+  - [x] Prometheus client
+  - [x] Playbook 判断逻辑
+  - [x] OpsFinding 输出
+  - [x] 安全策略拦截
+- [x] API 测试：
+  - [x] 诊断接口
+  - [x] 操作确认接口
+  - [x] 告警 webhook
+- [x] 集成测试：
+  - [x] kind 集群真实诊断
+  - [x] Prometheus 真实查询
+  - [x] Alertmanager 告警闭环
+- [x] Web 测试：
+  - [x] 云运维报告展示
+  - [x] 操作确认流程
+  - [x] 删除会话功能不回归
+- [x] 回归测试：
+  - [x] 无 kubeconfig 时 mock 模式仍可用
+  - [x] 无 Prometheus 时 K8s 诊断仍可用
+  - [x] 权限不足时返回清晰错误
+  - [x] 所有写操作必须确认
+
+- [x] 单元测试：
+  - [x] K8s client
+  - [x] Prometheus client
+  - [x] Playbook 判断逻辑
+  - [x] OpsFinding 输出
+  - [x] 安全策略拦截
+- [x] API 测试：
+  - [x] 诊断接口
+  - [x] 操作确认接口
+  - [x] 告警 webhook
+- [x] 集成测试：
+  - [x] kind 集群真实诊断
+  - [x] Prometheus 真实查询
+  - [x] Alertmanager 告警闭环
+- [x] Web 测试：
+  - [x] 云运维报告展示
+  - [x] 操作确认流程
+  - [x] 删除会话功能不回归
+- [x] 回归测试：
+  - [x] 无 kubeconfig 时 mock 模式仍可用
+  - [x] 无 Prometheus 时 K8s 诊断仍可用
+  - [x] 权限不足时返回清晰错误
+  - [x] 所有写操作必须确认
+
+- [x] 单元测试：
+  - [x] K8s client
+  - [x] Prometheus client
+  - [x] Playbook 判断逻辑
+  - [x] OpsFinding 输出
+  - [x] 安全策略拦截
+- [x] API 测试：
+  - [x] 诊断接口
+  - [x] 操作确认接口
+  - [x] 告警 webhook
+- [x] 集成测试：
+  - [x] kind 集群真实诊断
+  - [x] Prometheus 真实查询
+  - [x] Alertmanager 告警闭环
+- [x] Web 测试：
+  - [x] 云运维报告展示
+  - [x] 操作确认流程
+  - [x] 删除会话功能不回归
+- [x] 回归测试：
+  - [x] 无 kubeconfig 时 mock 模式仍可用
+  - [x] 无 Prometheus 时 K8s 诊断仍可用
+  - [x] 权限不足时返回清晰错误
+  - [x] 所有写操作必须确认
+
 - [ ] 单元测试：
   - [ ] K8s client
   - [ ] Prometheus client

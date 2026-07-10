@@ -45,20 +45,22 @@ def test_prometheus_disabled_returns_unavailable() -> None:
     assert result.error == "prometheus disabled"
 
 
-def test_prometheus_mock_queries_common_metrics() -> None:
+def test_prometheus_unavailable_without_http_base_url() -> None:
+    # 已彻底移除 mock：非 http(s) base_url 不再返回模拟数据，而是标记不可用。
     client = PrometheusQueryClient(enabled=True, base_url="mock://prometheus")
-    pod_metrics = client.pod_resource_snapshot("default", "api")
-    names = {metric.name for metric in pod_metrics}
-    assert names == {"pod_cpu_usage", "pod_memory_usage", "pod_restart_count"}
-    assert all(metric.available for metric in pod_metrics)
+    result = client.pod_cpu_usage("default", "api")
+    assert result.available is False
+    assert result.value is None
+    assert "http(s)" in result.error
 
-    service_metrics = client.service_snapshot("default", "checkout")
-    assert {metric.name for metric in service_metrics} == {
-        "http_5xx_error_rate",
-        "request_latency_p95",
-        "request_latency_p99",
-        "service_availability",
+    # snapshot 里的每一项都应为不可用（无任何模拟指标值）。
+    pod_metrics = client.pod_resource_snapshot("default", "api")
+    assert {metric.name for metric in pod_metrics} == {
+        "pod_cpu_usage",
+        "pod_memory_usage",
+        "pod_restart_count",
     }
+    assert all(metric.available is False for metric in pod_metrics)
 
 
 def test_prometheus_from_settings() -> None:
@@ -77,7 +79,7 @@ def test_prometheus_from_settings() -> None:
     assert client.timeout_seconds == 2.5
 
 
-def test_prometheus_real_http_query_parses_vector_value() -> None:
+def test_prometheus_real_http_query_parses_vector_value_real() -> None: # 测试真实 HTTP 查询解析向量值
     server = HTTPServer(("127.0.0.1", 0), _PromHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()

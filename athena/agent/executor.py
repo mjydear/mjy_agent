@@ -33,9 +33,10 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from athena.agent.base import AgentResponse
 from athena.exceptions import AgentError, AthenaError, ErrorCode
@@ -44,6 +45,10 @@ from athena.memory import WorkingMemory
 from athena.prompt import ContextAssembler
 from athena.tools import ToolCall, ToolRegistry
 from athena.types import JSONValue
+
+if TYPE_CHECKING:
+    from athena.learning.tracer import Tracer
+    from athena.memory.skill import SkillLibrary
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +181,11 @@ class ReActAgent:
     tool_registry: ToolRegistry
     memory: WorkingMemory
     max_steps: int = 6  # 💡 学习提示：默认 6 步，足够处理需要 2-3 次工具调用的任务
+    # 可选：执行轨迹记录器（依赖注入）。注入后每步 Thought/Action/Observation、工具调用与
+    # 工具错误都会 record 到 Tracer，作为 Skill 自进化闭环的真实输入（阶段②-A）。
+    tracer: "Tracer | None" = None
+    # 可选：技能库（依赖注入）。注入后每次 run() 前按 query 召回已学 Skill 注入 prompt（阶段②-D）。
+    skill_library: "SkillLibrary | None" = None
 
     def __post_init__(self) -> None:
         """
@@ -198,7 +208,7 @@ class ReActAgent:
                 ErrorCode.AGENT_EXECUTION_FAILED, "max_steps must be positive"
             )
 
-    async def run(self, query: str) -> AgentResponse:
+    async def run(self, query: str, run_id: str | None = None) -> AgentResponse:
         """
         ReAct 循环的入口——处理一个用户查询，返回最终答案。
 
@@ -257,6 +267,11 @@ class ReActAgent:
         # 后续的提示词组装会从 memory 里取历史，这样 AI 能记住这次对话的上下文。
         self.memory.add_message("user", query, importance=2.0)
 
+        # run_id 关联本次任务的所有 trace 事件；调用方（services）传入 task_id，缺省自动生成。
+        trace_run_id = run_id or f"agent-{uuid.uuid4().hex[:12]}"
+        # 技能召回：把历史学到的相关 Skill 注入 prompt，形成“越用越强”（阶段②-D）。
+        skills_context = await self._recall_skills(query)
+
         scratchpad = ""  # 💡 学习提示：草稿纸——累积本次任务所有步骤的文字，每轮追加，始终送入 LLM
         steps: list[str] = (
             []
@@ -275,6 +290,7 @@ class ReActAgent:
                     memory=self.memory,
                     tools=self.tool_registry,
                     scratchpad=scratchpad,
+                    skills=skills_context,
                 )
 
                 # --- 步骤 2：调用 LLM 获取决策 ---
@@ -353,6 +369,16 @@ class ReActAgent:
                 )
                 steps.append(f"Observation: {observation}")
 
+                # --- 轨迹采集：把本步 thought/action/observation 与工具成败落到 Tracer ---
+                # 工具失败记为 tool.error（= 集群报错日志来源），作为 Skill 自进化的真实输入。
+                self._trace_step(
+                    trace_run_id,
+                    step_index,
+                    decision,
+                    observation,
+                    tool_success=tool_result.success,
+                )
+
             # --- 超出最大步数，给出兜底回复 ---
             # 💡 学习提示：importance=1.0 比正常答案低，表示这是一个"不太重要"的兜底信息，
             # 记忆系统可以在空间不足时优先丢弃低重要性的记录
@@ -375,6 +401,81 @@ class ReActAgent:
             # 💡 学习提示：logger.exception() 会自动把完整堆栈写入日志，方便事后排查
             logger.exception("Agent execution failed")
             raise AgentError(ErrorCode.AGENT_EXECUTION_FAILED, str(exc)) from exc
+
+    async def _recall_skills(self, query: str) -> str:
+        """
+        从技能库召回与本次查询相关的已学 Skill，渲染成 prompt 片段（阶段②-D）。
+
+        功能说明：注入了 skill_library 时按 query 语义召回 top-k Skill，拼成可读文本；
+            未注入或召回为空时返回空串（不影响现有行为）。
+        参数说明：query 用户查询。
+        返回值：Skill 上下文文本（可能为空）。
+        设计思路：召回失败绝不能拖垮主诊断流程，异常一律降级为空串。
+        """
+        if self.skill_library is None:
+            return ""
+        try:
+            skills = await self.skill_library.match(query, top_k=3)
+        except Exception as exc:  # 召回是增强项，失败不影响主流程
+            logger.warning("skill recall failed: %s", exc)
+            return ""
+        if not skills:
+            return ""
+        blocks = [
+            f"- {skill.name}: {skill.description}\n{skill.content}" for skill in skills
+        ]
+        return "\n".join(blocks)
+
+    def _trace_step(
+        self,
+        run_id: str,
+        step_index: int,
+        decision: "ReActDecision",
+        observation: str,
+        *,
+        tool_success: bool,
+    ) -> None:
+        """
+        把单步执行落到 Tracer（阶段②-A）。
+
+        功能说明：注入了 tracer 时，记录 agent.step 事件；有工具调用时记录 tool.call，
+            工具失败时记录 tool.error（作为集群报错日志 / 失败经验的采集来源）。
+        参数说明：run_id 关联本次任务；step_index 步序；decision 本步决策；observation 观察结果。
+        返回值：None。
+        设计思路：采集是旁路，任何异常都不能影响 Agent 主循环，因此整体 try/except 兜底。
+        """
+        if self.tracer is None:
+            return
+        try:
+            from athena.learning.tracer import TraceEvent
+
+            self.tracer.record(
+                TraceEvent(
+                    name="agent.step",
+                    run_id=run_id,
+                    payload={
+                        "step_index": str(step_index),
+                        "thought": decision.thought,
+                        "action": str(decision.action),
+                        "observation": observation[:2000],
+                    },
+                )
+            )
+            if decision.action:
+                event_name = "tool.call" if tool_success else "tool.error"
+                self.tracer.record(
+                    TraceEvent(
+                        name=event_name,
+                        run_id=run_id,
+                        payload={
+                            "tool": str(decision.action),
+                            "success": str(tool_success),
+                            "observation": observation[:2000],
+                        },
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001 - 采集旁路，绝不拖垮主循环
+            logger.warning("trace record failed: %s", exc)
 
     async def stream_run(self, query: str) -> AsyncIterator[StreamEvent]:
         """

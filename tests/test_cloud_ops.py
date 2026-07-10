@@ -9,28 +9,32 @@ from athena.api.server import create_app
 from athena.api.services import AthenaWebService
 from athena.config import AthenaSettings
 from athena.exceptions import ConfigError
+from athena.tools.cloud.k8s import K8sReadOnlyDiagnoser
+from tests._k8s_fakes import demo_client
 from tests.test_web_console import build_test_agent
 
 
 def build_cloud_client() -> TestClient:
     """Build an isolated Web API client for CloudOps tests."""
-    service = AthenaWebService(agent_factory=build_test_agent, session_ttl_seconds=60)
+    # 生产已无 mock：注入 Demo 只读诊断器 + 测试 Agent，保证 CloudOps 测试确定且离线。
+    service = AthenaWebService(
+        agent_factory=build_test_agent,
+        cloud_agent_factory=lambda actor: build_test_agent(),
+        k8s_diagnoser=K8sReadOnlyDiagnoser(demo_client()),
+        session_ttl_seconds=60,
+    )
     return TestClient(create_app(service=service))
 
 
-def test_cloud_ops_modes_and_four_scenarios() -> None:
+def test_cloud_ops_modes_and_scenarios() -> None:
     client = build_cloud_client()
 
+    # CloudOps 现仅支持 k8s / fault 两种模式（resource/cost 已移除）。
     modes = client.get("/api/cloud-ops/modes")
     assert modes.status_code == 200
-    assert {mode["mode"] for mode in modes.json()} == {
-        "k8s",
-        "resource",
-        "fault",
-        "cost",
-    }
+    assert {mode["mode"] for mode in modes.json()} == {"k8s", "fault"}
 
-    for mode in ("k8s", "resource", "fault", "cost"):
+    for mode in ("k8s", "fault"):
         response = client.post(
             "/api/cloud-ops/run", json={"mode": mode, "task": "KubePodCrashLooping"}
         )
@@ -84,11 +88,12 @@ def test_cloud_ops_k8s_includes_structured_report() -> None:
     assert report["namespace"] == "default"
     assert report["metrics"]["finding_count"] == len(report["findings"])
     status = payload["data"]["cloud_status"]
-    assert status["source"] == "mock"
+    # 真实链路，无 mock：source 恒为 real，不存在降级。
+    assert status["source"] == "real"
     assert status["k8s_context"] == "default"
     assert status["namespace_scope"] == ["*"]
     assert status["prometheus"]["enabled"] is False
-    # 缺口1：mock 模式下 degraded 恒为 False
+    # 缺口1：真实链路 degraded 恒为 False
     assert status["degraded"] is False
     # 缺口2：遗留 builtin 冗余字段已移除
     assert "snapshot" not in payload["data"]
@@ -119,25 +124,6 @@ def test_cloud_ops_k8s_namespace_reflected_in_response() -> None:
     # 无白名单时应诊断 prod，data.namespace 与报告命名空间一致
     assert payload["data"]["namespace"] == "prod"
     assert payload["data"]["readonly_report"]["namespace"] == "prod"
-
-
-def test_cloud_ops_high_risk_requires_confirmation() -> None:
-    client = build_cloud_client()
-
-    blocked = client.post(
-        "/api/cloud-ops/run", json={"mode": "resource", "task": "restart instance"}
-    )
-    assert blocked.status_code == 200
-    assert blocked.json()["requires_confirmation"] is True
-    assert blocked.json()["status"] == "waiting_confirmation"
-
-    confirmed = client.post(
-        "/api/cloud-ops/run",
-        json={"mode": "resource", "task": "restart instance", "confirmed": True},
-    )
-    assert confirmed.status_code == 200
-    assert confirmed.json()["requires_confirmation"] is False
-    assert confirmed.json()["status"] == "success"
 
 
 def test_cloud_ops_k8s_write_action_requires_confirmation() -> None:
@@ -239,9 +225,13 @@ def test_cloud_ops_stream_and_knowledge() -> None:
         assert response.status_code == 200
         body = "".join(response.iter_text())
     assert "data:" in body
-    assert "Root cause" in body
+    # fault 场景现由 Agent 驱动，最终答案来自测试 Agent（"web ok"）。
+    assert "web ok" in body
 
-    knowledge = client.get("/api/cloud-ops/knowledge", params={"query": "CrashLoop"})
+    # _run_fault_ops 会把该告警记入运维知识库，据此可检索到对应案例。
+    knowledge = client.get(
+        "/api/cloud-ops/knowledge", params={"query": "KubePodCrashLooping"}
+    )
     assert knowledge.status_code == 200
     assert knowledge.json()["items"]
 

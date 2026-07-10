@@ -50,7 +50,6 @@ from athena.tools.builtin.cloud import (
     CloudOperationResult,
     TencentCloudClient,
 )
-from athena.tools.builtin.k8s import K8sDiagnoser, K8sOpsTools
 from athena.tools.cloud.k8s import (
     EvidenceBoundReportSummarizer,
     K8sActionSecurityPolicy,
@@ -960,12 +959,6 @@ class AthenaWebService:
         设计思路：K8s 巡检是只读场景，不需要人工确认，但要把诊断结果结构化返回（阶段 2 报告模型）。
         使用示例：answer, steps, data, confirm = self._run_k8s_ops("诊断 prod 命名空间")
         """
-        tools = K8sOpsTools()
-        diagnoser = K8sDiagnoser(tools.client)
-        snapshot = tools.cluster_snapshot()
-        diagnoses = [
-            diagnosis.__dict__ for diagnosis in diagnoser.diagnose_pods()
-        ]  # 💡 学习提示：把 dataclass 转 dict，FastAPI/前端才能直接 JSON 化。
         # 只读诊断器：基于 settings.ops 的 mock/real 客户端做证据聚合诊断（含事件+日志）。
         readonly_diagnoser = self._get_k8s_readonly_diagnoser()
         namespace = self._parse_k8s_namespace(
@@ -1050,11 +1043,6 @@ class AthenaWebService:
             ),
             StepTrace(
                 step_index=2,
-                event_type="diagnose",
-                content=f"Detected {len(diagnoses)} Kubernetes findings",
-            ),
-            StepTrace(
-                step_index=3,
                 event_type="analyze",
                 content=(
                     f"Read-only diagnoser produced {len(readonly_findings)} "
@@ -1062,7 +1050,7 @@ class AthenaWebService:
                 ),
             ),
             StepTrace(
-                step_index=4,
+                step_index=3,
                 event_type="recommend",
                 content="Prioritize CrashLoopBackOff logs and ImagePullBackOff registry checks",
             ),
@@ -1074,8 +1062,6 @@ class AthenaWebService:
             {
                 "namespace": namespace,
                 "cloud_status": self._k8s_cloud_status(readonly_diagnoser, namespace, readonly_report),
-                "snapshot": snapshot,
-                "diagnoses": diagnoses,
                 "readonly_findings": readonly_findings,
                 "readonly_report": readonly_report,
             },
@@ -1101,6 +1087,8 @@ class AthenaWebService:
         return {
             "mode": client.mode,
             "source": "real" if client.mode == "real" else "mock",
+            # real 模式下若发生自动降级为 True，供前端标注“real(降级 mock)”；mock 模式恒 False。
+            "degraded": bool(getattr(client, "last_call_degraded", False)),
             "k8s_context": client.context or "default",
             "namespace": namespace,
             "namespace_scope": namespace_scope,

@@ -66,6 +66,10 @@ observability:
 ops:
   # 云运维 K8s 诊断：mock=始终用演示数据；real=优先真实集群，缺 kubeconfig/连接失败自动降级 mock
   mode: mock
+  # strict_real=false：real 连不上时静默降级 mock（演示友好）；true：直接抛错不降级（生产建议）
+  strict_real: false
+  # require_durable_audit=true：启动时若未配置 Redis 则报错，强制持久化审计；生产用 ATHENA_OPS_REQUIRE_DURABLE_AUDIT 开启
+  require_durable_audit: false
   kubernetes:
     # kubeconfig 为 null 时用 SDK 默认查找（集群内配置或 ~/.kube/config）；生产用 ATHENA_OPS_K8S_KUBECONFIG 注入
     kubeconfig: null
@@ -87,3 +91,6 @@ ops:
     environments: [dev, staging, prod]
     # prod 默认禁止写操作；生产若确需启用，用 ATHENA_OPS_PROD_WRITE_ENABLED=true 显式开启
     prod_write_enabled: false
+    # Alertmanager webhook 共享密钥：null=不强制校验（演示/CI）；生产用 ATHENA_OPS_WEBHOOK_SECRET 注入
+    webhook_secret: null
+    webhook_secret_header: X-Alert-Secret

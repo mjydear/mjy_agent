@@ -224,6 +224,10 @@ class OpsSecuritySettings(BaseModel):
     )
     environments: list[str] = Field(default_factory=lambda: ["dev", "staging", "prod"])
     prod_write_enabled: bool = False
+    # Alertmanager webhook 共享密钥：None/空=不强制校验（本地演示/CI 兼容）；
+    # 设置后 webhook 请求必须携带 webhook_secret_header 且值匹配，否则 401。
+    webhook_secret: str | None = None
+    webhook_secret_header: str = "X-Alert-Secret"
 
 
 class OpsSettings(BaseModel):
@@ -242,6 +246,12 @@ class OpsSettings(BaseModel):
     """
 
     mode: str = "mock"  # mock | real
+    # strict_real=False（默认）：real 连不上集群时静默降级 mock，保证演示不中断；
+    # strict_real=True：real 调用失败直接抛 OPS_REAL_UNAVAILABLE，不降级，暴露真实故障（生产建议）。
+    strict_real: bool = False
+    # require_durable_audit=True：启动时若未配置 Redis（审计走内存后端，重启即丢）则报错，
+    # 强制生产使用持久化审计；默认 False 保证 CI/本地零配置可跑。
+    require_durable_audit: bool = False
     kubernetes: K8sSettings = Field(default_factory=K8sSettings)
     prometheus: PrometheusSettings = Field(default_factory=PrometheusSettings)
     security: OpsSecuritySettings = Field(default_factory=OpsSecuritySettings)
@@ -393,6 +403,21 @@ def _apply_env_overrides(settings: AthenaSettings) -> AthenaSettings:
             "yes",
             "on",
         }
+    strict_real = os.getenv("ATHENA_OPS_STRICT_REAL")
+    if strict_real:
+        updated.ops.strict_real = strict_real.lower() in {"1", "true", "yes", "on"}
+    require_durable_audit = os.getenv("ATHENA_OPS_REQUIRE_DURABLE_AUDIT")
+    if require_durable_audit:
+        updated.ops.require_durable_audit = require_durable_audit.lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    webhook_secret = os.getenv("ATHENA_OPS_WEBHOOK_SECRET")
+    if webhook_secret:
+        # 生产用环境变量注入密钥，避免明文落 YAML
+        updated.ops.security.webhook_secret = webhook_secret
     return updated
 
 

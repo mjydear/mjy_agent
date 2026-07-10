@@ -33,8 +33,12 @@ from athena.tools.cloud.prometheus import PrometheusQueryClient
 
 
 # ---------------------------------------------------------------------------
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 # 假 CoreV1Api：用 SimpleNamespace 模拟 kubernetes SDK 返回的对象结构
 # ---------------------------------------------------------------------------
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 def _make_pod(name: str = "checkout-5f8b") -> SimpleNamespace:
     return SimpleNamespace(
         metadata=SimpleNamespace(
@@ -139,16 +143,20 @@ class ExplodingCoreApi:
 
 
 # ---------------------------------------------------------------------------
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 # mock 模式
 # ---------------------------------------------------------------------------
-def test_mock_mode_list_pods_returns_demo_data() -> None:
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
+def test_mock_mode_list_pods_returns_demo_data_mock() -> None: # 测试mock模式下返回的Pods数据
     client = K8sReadOnlyClient(mode="mock")
     pods = client.list_pods("default")
     assert {p["name"] for p in pods} == {"api-7d9c", "checkout-5f8b", "image-worker-22a"}
     assert all(p["namespace"] == "default" for p in pods)
 
 
-def test_mock_mode_describe_events_logs_namespaces() -> None:
+def test_mock_mode_describe_events_logs_namespaces_real() -> None: # 测试mock模式下描述Pod及其事件和日志的功能
     client = K8sReadOnlyClient(mode="mock")
     described = client.describe_pod("default", "checkout-5f8b")
     assert described["name"] == "checkout-5f8b"
@@ -165,9 +173,13 @@ def test_mock_mode_describe_events_logs_namespaces() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 # real 模式（注入成功替身）
 # ---------------------------------------------------------------------------
-def test_real_mode_uses_injected_core_api() -> None:
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
+def test_real_mode_uses_injected_core_api_real() -> None: # 测试real模式下使用注入的CoreApi
     client = K8sReadOnlyClient(mode="real", core_api=FakeCoreApi())
 
     pods = client.list_pods("default")
@@ -191,9 +203,13 @@ def test_real_mode_uses_injected_core_api() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 # real 模式自动降级
 # ---------------------------------------------------------------------------
-def test_real_mode_falls_back_to_mock_on_error() -> None:
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
+def test_real_mode_falls_back_to_mock_on_error_real() -> None: # 测试real模式下发生错误时降级到mock
     client = K8sReadOnlyClient(mode="real", core_api=ExplodingCoreApi())
 
     # 每个方法都应降级到 mock 数据而非抛错
@@ -225,9 +241,47 @@ def test_real_mode_falls_back_when_sdk_missing() -> None:
     }
 
 
+def test_strict_real_raises_instead_of_fallback() -> None:
+    # strict_real=True：real 调用失败不降级，直接抛 OPS_REAL_UNAVAILABLE
+    client = K8sReadOnlyClient(
+        mode="real", strict_real=True, core_api=ExplodingCoreApi()
+    )
+    with pytest.raises(OpsError) as exc_info:
+        client.list_pods("default")
+    assert exc_info.value.code == ErrorCode.OPS_REAL_UNAVAILABLE
+
+
+def test_fallback_sets_degraded_flag() -> None:
+    # 非 strict 模式：real 失败降级 mock 并置 last_call_degraded=True
+    degraded = K8sReadOnlyClient(mode="real", core_api=ExplodingCoreApi())
+    assert degraded.last_call_degraded is False  # 初始未降级
+    degraded.list_pods("default")
+    assert degraded.last_call_degraded is True
+
+    # real 成功则标记为 False
+    healthy = K8sReadOnlyClient(mode="real", core_api=FakeCoreApi())
+    healthy.list_pods("default")
+    assert healthy.last_call_degraded is False
+
+    # mock 模式恒为 False（从未尝试 real）
+    mock = K8sReadOnlyClient(mode="mock")
+    mock.list_pods("default")
+    assert mock.last_call_degraded is False
+
+
+def test_from_settings_wires_strict_real() -> None:
+    settings = AthenaSettings(ops=OpsSettings(mode="real", strict_real=True))
+    client = K8sReadOnlyClient.from_settings(settings)
+    assert client.strict_real is True
+
+
 # ---------------------------------------------------------------------------
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 # 命名空间白名单（安全边界，越权硬失败，不降级）
 # ---------------------------------------------------------------------------
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 def test_namespace_allowlist_blocks_unlisted_namespace() -> None:
     client = K8sReadOnlyClient(mode="mock", namespace_allowlist=["default"])
     # 白名单内正常
@@ -264,8 +318,12 @@ def test_blank_namespace_rejected() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 # 边界与配置校验
 # ---------------------------------------------------------------------------
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 def test_invalid_mode_raises() -> None:
     with pytest.raises(OpsError) as exc_info:
         K8sReadOnlyClient(mode="prod-cluster")
@@ -296,8 +354,12 @@ def test_from_settings_wires_ops_config() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 # 工具注册 + invoke 端到端
 # ---------------------------------------------------------------------------
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 @pytest.mark.asyncio
 async def test_register_and_invoke_k8s_tools() -> None:
     registry = ToolRegistry()
@@ -348,8 +410,12 @@ def test_register_defaults_to_mock_without_client_or_settings() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 # 只读诊断分析器
 # ---------------------------------------------------------------------------
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 def test_diagnoser_flags_crashloop_with_log_evidence() -> None:
     diagnoser = K8sReadOnlyDiagnoser(K8sReadOnlyClient(mode="mock"))
     findings = diagnoser.diagnose_namespace(
@@ -424,8 +490,12 @@ async def test_diagnose_tool_registered_and_invokable() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 # 阶段 1 新增只读能力：deployments / services / nodes（mock）
 # ---------------------------------------------------------------------------
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 def test_mock_list_deployments_services_nodes() -> None:
     client = K8sReadOnlyClient(mode="mock")
 
@@ -463,8 +533,12 @@ def test_new_readonly_methods_respect_allowlist() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 # 阶段 1 新增只读能力：real 模式（注入替身）
 # ---------------------------------------------------------------------------
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 class FakeAppsApi:
     """AppsV1Api 成功替身：返回一个不健康的 Deployment。"""
 
@@ -600,8 +674,12 @@ async def test_new_readonly_tools_registered_and_invokable() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 # 阶段 2：结构化诊断报告模型
 # ---------------------------------------------------------------------------
+# Testing the K8s read-only client functionalities to validate Kubernetes pod operations.
+# 此部分涵盖了对 K8s 客户端的多种测试场景以确保功能正常。
 def test_build_report_produces_structured_schema() -> None:
     diagnoser = K8sReadOnlyDiagnoser(K8sReadOnlyClient(mode="mock"))
     report = diagnoser.build_report("default", include_logs=True)

@@ -60,6 +60,7 @@ class K8sReadOnlyClient:
         context: str | None = None,
         namespace_allowlist: list[str] | tuple[str, ...] | None = None,
         timeout: float = 10.0,
+        strict_real: bool = False,
         core_api: object | None = None,
         apps_api: object | None = None,
     ) -> None:
@@ -84,6 +85,10 @@ class K8sReadOnlyClient:
         # 白名单用 tuple 存储：不可变、可安全共享，语义上也表达“配置快照”
         self.namespace_allowlist: tuple[str, ...] = tuple(namespace_allowlist or ())
         self.timeout = timeout
+        # strict_real=True 时 real 调用失败不降级，直接抛错暴露真实故障（生产建议）。
+        self.strict_real = strict_real
+        # 记录最近一次 real 调用是否发生降级，供上层（前端云状态卡片）展示。
+        self.last_call_degraded = False
         self._core_api = core_api
         self._apps_api = apps_api  # AppsV1Api：deployments 等工作负载资源
         self._kube_config_loaded = False  # kubeconfig 只加载一次，core/apps 共享
@@ -106,6 +111,7 @@ class K8sReadOnlyClient:
             context=ops.kubernetes.context,
             namespace_allowlist=ops.kubernetes.namespace_allowlist,
             timeout=ops.kubernetes.timeout,
+            strict_real=ops.strict_real,
         )
 
     # ------------------------------------------------------------------
@@ -180,20 +186,31 @@ class K8sReadOnlyClient:
         """
         统一“真实优先 + 异常降级”执行骨架。
 
-        功能说明：mock 模式直接跑 mock_fn；real 模式先试 real_fn，任何异常降级 mock_fn。
+        功能说明：mock 模式直接跑 mock_fn；real 模式先试 real_fn，异常时按 strict_real 决定
+            抛错还是降级 mock_fn，并更新 last_call_degraded 标记供上层展示。
         参数说明：real_fn 真实调用；mock_fn 演示数据回退。
         返回值：real_fn 或 mock_fn 的结果。
-        设计思路：把降级逻辑收敛到一处，五个公开方法都复用，避免重复 try/except。
+        设计思路：把降级逻辑收敛到一处，公开方法都复用，避免重复 try/except；
+            strict_real=True 时不静默降级，避免生产上真实故障被 mock 数据掩盖。
         使用示例：见 list_pods。
         """
         if self.mode != "real":
             return mock_fn()
         try:
-            return real_fn()
+            result = real_fn()
+            self.last_call_degraded = False
+            return result
         except Exception as exc:  # 包含 ImportError（未装 SDK）、连接失败、API 错误
+            if self.strict_real:
+                # 严格模式：不降级，抛错暴露真实连接/调用故障
+                raise OpsError(
+                    ErrorCode.OPS_REAL_UNAVAILABLE,
+                    f"k8s real call failed and strict_real is enabled: {exc}",
+                ) from exc
             logger.warning(
                 "k8s real call failed, falling back to mock: %s", exc
             )
+            self.last_call_degraded = True
             return mock_fn()
 
     # ==================================================================

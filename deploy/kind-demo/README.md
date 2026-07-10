@@ -152,9 +152,42 @@ curl -sS -X POST http://localhost:8000/api/cloud-ops/run \
 kind delete cluster --name athena-demo
 ```
 
+## 运行真实集群 E2E 测试
+
+`tests/test_k8s_e2e.py` 直连本 kind 集群验证 real 链路（默认跳过，需显式开启）：
+
+```bash
+# 1) 先启动集群与异常工作负载（见上文步骤 1）
+bash deploy/kind-demo/start-kind.sh
+# 2) 开启 E2E 并指向真实集群
+ATHENA_E2E_K8S=1 ATHENA_OPS_MODE=real \
+  ATHENA_OPS_K8S_CONTEXT=kind-athena-demo \
+  ATHENA_OPS_K8S_NAMESPACE_ALLOWLIST=athena-demo,default \
+  pytest tests/test_k8s_e2e.py
+```
+
+未设 `ATHENA_E2E_K8S` 时整文件 skip，不影响 CI。
+
+## 生产加固配置（SRE 规范）
+
+| 目的 | 配置 | 说明 |
+| --- | --- | --- |
+| 暴露真实故障 | `ATHENA_OPS_STRICT_REAL=true` | real 连不上集群时直接报错，不静默降级 mock（避免掩盖故障）；降级发生时前端云状态卡片会标注「降级 mock」 |
+| webhook 鉴权 | `ATHENA_OPS_WEBHOOK_SECRET=<secret>` | Alertmanager webhook 必须携带 `X-Alert-Secret` 头且匹配，否则 401；未设则不强制（演示/CI 兼容） |
+| 审计持久化 | `ATHENA_REDIS_URL=<url>` + `ATHENA_OPS_REQUIRE_DURABLE_AUDIT=true` | 强制审计哈希链落 Redis；未配置 Redis 时启动即报错，防止内存后端重启丢审计 |
+
+发送带密钥的告警（配置了 webhook_secret 后）：
+
+```bash
+curl -sS -X POST http://localhost:8000/api/alerts/webhook \
+  -H "Content-Type: application/json" \
+  -H "X-Alert-Secret: <secret>" \
+  -d @deploy/kind-demo/alertmanager-webhook-example.json
+```
+
 ## 回归与降级验证要点
 
-- 无 kubeconfig / 集群不可达 → 自动降级 mock，诊断仍可用。
+- 无 kubeconfig / 集群不可达 → 自动降级 mock，诊断仍可用（`strict_real=true` 时改为直接报错）。
 - `prometheus.enabled=false` 或 Prometheus 不可达 → K8s 诊断照常，报告中结构化标注 Prometheus 不可用。
 - 请求 `namespace_allowlist` 之外的命名空间 → 返回清晰的越权错误（不降级）。
 - 所有写操作必须人工确认后才执行。

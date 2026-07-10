@@ -58,7 +58,7 @@ from athena.observability.prometheus import PrometheusMetrics
 from athena.observability.otel import setup_tracing
 from athena.cli.main import build_agent
 from athena.config import AthenaSettings, load_settings
-from athena.exceptions import AthenaError
+from athena.exceptions import AthenaError, ConfigError, ErrorCode
 from athena.logging import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -143,6 +143,17 @@ def create_app(
     resolved_settings = (
         settings or load_settings()
     )  # 💡 学习提示：这里延迟读取配置，方便测试传入自定义 settings。
+    # 生产审计持久化硬约束：require_durable_audit=True 时必须配置 Redis，否则审计走内存
+    # 后端重启即丢，违反 SRE 可审计要求，启动即快速失败而非静默降级。
+    if (
+        resolved_settings.ops.require_durable_audit
+        and not resolved_settings.cache.redis_url
+    ):
+        raise ConfigError(
+            ErrorCode.CONFIG_INVALID,
+            "ops.require_durable_audit is enabled but no Redis is configured "
+            "(set cache.redis_url or ATHENA_REDIS_URL); audit chain would not be durable",
+        )
     configure_logging(resolved_settings.logging.level)
     app = FastAPI(
         title="Athena Agent Web Console", version="0.1.0", lifespan=_lifespan

@@ -1,4 +1,8 @@
-"""告警 webhook 接入路由测试。"""
+"""告警 webhook 接入路由测试。
+
+# 测试告警 webhook 功能与审计链间的交互，确保报警数据能够被准确记录与处理。
+
+# 测试告警 webhook 功能与审计链间的交互，确保报警数据能够被准确记录与处理。"""
 
 from __future__ import annotations
 
@@ -14,12 +18,14 @@ def _service() -> AthenaWebService:
     return service
 
 
-def _client() -> TestClient:
+def _client(settings: AthenaSettings | None = None) -> TestClient:
     service = _service()
-    return TestClient(create_app(settings=AthenaSettings(), service=service))
+    return TestClient(
+        create_app(settings=settings or AthenaSettings(), service=service)
+    )
 
 
-def test_alert_webhook_accepts_alertmanager_payload() -> None:
+def test_alert_webhook_accepts_alertmanager_payload_real() -> None: # 测试告警 webhook 接收 Alertmanager 负载
     client = _client()
     payload = {
         "alerts": [
@@ -70,7 +76,40 @@ def test_alert_webhook_tolerates_minimal_payload() -> None:
     assert resp.json()["readonly_report"]["namespace"] == "default"
 
 
-def test_alert_webhook_records_source_and_processing_in_audit_chain() -> None:
+def _settings_with_secret(secret: str = "s3cr") -> AthenaSettings:
+    settings = AthenaSettings()
+    settings.ops.security.webhook_secret = secret
+    return settings
+
+
+def test_webhook_rejects_missing_secret_when_configured() -> None:
+    client = _client(_settings_with_secret())
+    resp = client.post("/api/alerts/webhook", json={"alert_name": "X"})
+    assert resp.status_code == 401
+
+
+def test_webhook_accepts_valid_secret() -> None:
+    client = _client(_settings_with_secret())
+    resp = client.post(
+        "/api/alerts/webhook",
+        json={"alert_name": "X"},
+        headers={"X-Alert-Secret": "s3cr"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["alert_name"] == "X"
+
+
+def test_webhook_rejects_wrong_secret() -> None:
+    client = _client(_settings_with_secret())
+    resp = client.post(
+        "/api/alerts/webhook",
+        json={"alert_name": "X"},
+        headers={"X-Alert-Secret": "wrong"},
+    )
+    assert resp.status_code == 401
+
+
+def test_alert_webhook_records_source_and_processing_in_audit_chain() -> None: # 测试告警 webhook 在审计链中记录来源和处理过程
     service = _service()
     client = TestClient(create_app(settings=AthenaSettings(), service=service))
 

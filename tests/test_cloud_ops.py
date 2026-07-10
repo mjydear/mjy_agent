@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from athena.api.server import create_app
 from athena.api.services import AthenaWebService
+from athena.config import AthenaSettings
+from athena.exceptions import ConfigError
 from tests.test_web_console import build_test_agent
 
 
@@ -48,6 +51,10 @@ def test_cloud_ops_k8s_includes_readonly_findings() -> None:
     payload = response.json()
     assert payload["status"] == "success"
     # 新增：只读诊断器产出的证据型结论应出现在结构化数据里
+# 进行测试以确认输出的正常属性由调用情况而定。返回信息应体现所有修复后的状态和版本信息; 需要确保无论是 mock 方式还是 real 方式都是正确的。
+
+# 进行测试以确认输出的正常属性由调用情况而定。返回信息应体现所有修复后的状态和版本信息; 需要确保无论是 mock 方式还是 real 方式都是正确的。
+
     findings = payload["data"]["readonly_findings"]
     assert findings
     symptoms = {item["symptom"] for item in findings}
@@ -81,6 +88,11 @@ def test_cloud_ops_k8s_includes_structured_report() -> None:
     assert status["k8s_context"] == "default"
     assert status["namespace_scope"] == ["*"]
     assert status["prometheus"]["enabled"] is False
+    # 缺口1：mock 模式下 degraded 恒为 False
+    assert status["degraded"] is False
+    # 缺口2：遗留 builtin 冗余字段已移除
+    assert "snapshot" not in payload["data"]
+    assert "diagnoses" not in payload["data"]
 
 
 def test_cloud_ops_k8s_parses_target_namespace() -> None:
@@ -232,3 +244,23 @@ def test_cloud_ops_stream_and_knowledge() -> None:
     knowledge = client.get("/api/cloud-ops/knowledge", params={"query": "CrashLoop"})
     assert knowledge.status_code == 200
     assert knowledge.json()["items"]
+
+
+def test_require_durable_audit_raises_without_redis() -> None:
+    # 缺口4：强制持久化审计但未配置 Redis → 启动即快速失败
+    settings = AthenaSettings()
+    settings.ops.require_durable_audit = True
+    settings.cache.redis_url = None
+    service = AthenaWebService(agent_factory=build_test_agent, session_ttl_seconds=60)
+    with pytest.raises(ConfigError):
+        create_app(settings=settings, service=service)
+
+
+def test_durable_audit_ok_with_redis_url() -> None:
+    # 配置了 redis_url 时不抛错（连接由 create_cache 内部降级处理，此处只校验配置约束）
+    settings = AthenaSettings()
+    settings.ops.require_durable_audit = True
+    settings.cache.redis_url = "redis://localhost:6379/0"
+    service = AthenaWebService(agent_factory=build_test_agent, session_ttl_seconds=60)
+    app = create_app(settings=settings, service=service)
+    assert app is not None

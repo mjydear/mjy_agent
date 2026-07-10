@@ -669,8 +669,12 @@ function renderCloudStatus(status) {
         ? "unavailable"
         : "enabled"
     : "disabled";
+  const modeText = status.degraded === true
+    ? `${escapeHtml(status.source || status.mode || "mock")} (降级 mock)`
+    : escapeHtml(status.source || status.mode || "mock");
+  const modeClass = status.degraded === true ? " degraded" : "";
   return `<section class="ops-status-grid">
-    <div class="ops-status-card"><span>模式</span><strong>${escapeHtml(status.source || status.mode || "mock")}</strong></div>
+    <div class="ops-status-card${modeClass}"><span>模式</span><strong>${modeText}</strong></div>
     <div class="ops-status-card"><span>K8s context</span><strong>${escapeHtml(status.k8s_context || "default")}</strong></div>
     <div class="ops-status-card"><span>Namespace</span><strong>${escapeHtml(status.namespace || "default")}</strong><small>${escapeHtml((status.namespace_scope || ["*"]).join(", "))}</small></div>
     <div class="ops-status-card"><span>Prometheus</span><strong>${escapeHtml(prometheusText)}</strong><small>${escapeHtml(prometheus.base_url || "-")}</small></div>

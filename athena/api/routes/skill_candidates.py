@@ -12,6 +12,9 @@ from athena.api.rbac import require_scope
 from athena.api.response import ApiResponse
 from athena.api.services import ApiServiceError
 from athena.application.skill_candidate_service import SkillCandidateService
+from athena.application.skill_candidate_generation_service import (
+    SkillCandidateGenerationService,
+)
 from athena.learning.skill_candidate import (
     SkillCandidate,
     SkillCandidateBridge,
@@ -58,12 +61,27 @@ class RejectRequest(BaseModel):
     note: str = Field(min_length=1, max_length=2000)
 
 
+class CandidateGenerationRequest(BaseModel):
+    source_trajectory_ids: tuple[str, ...] = Field(min_length=1, max_length=20)
+
+
 def _service(request: Request) -> SkillCandidateService:
     service = getattr(request.app.state, "skill_candidate_service", None)
     if service is None:
         raise ApiServiceError(
             "SKILL_CANDIDATE_SERVICE_UNAVAILABLE",
             "Skill Candidate persistence is not configured",
+            status_code=503,
+        )
+    return service
+
+
+def _generation_service(request: Request) -> SkillCandidateGenerationService:
+    service = getattr(request.app.state, "skill_candidate_generation_service", None)
+    if service is None:
+        raise ApiServiceError(
+            "SKILL_CANDIDATE_GENERATOR_UNAVAILABLE",
+            "Skill Candidate generation is not configured",
             status_code=503,
         )
     return service
@@ -183,6 +201,36 @@ async def propose_candidate_from_trajectories(
     except SkillCandidateError as exc:
         raise _candidate_error(exc) from exc
     return ApiResponse.ok(_candidate_view(candidate))
+
+
+@router.post("/generations", status_code=status.HTTP_201_CREATED)
+async def generate_candidate_from_trajectories(
+    payload: CandidateGenerationRequest,
+    request: Request,
+    tenant: TenantContext = Depends(require_scope("skills:write")),
+) -> ApiResponse[dict[str, object]]:
+    run = await _generation_service(request).generate(
+        tenant_id=tenant.tenant_id,
+        source_trajectory_ids=payload.source_trajectory_ids,
+        created_by=tenant.tenant_id,
+    )
+    return ApiResponse.ok(run.to_dict())
+
+
+@router.get("/generations/{run_id}")
+async def get_candidate_generation(
+    run_id: str,
+    request: Request,
+    tenant: TenantContext = Depends(require_scope("skills:read")),
+) -> ApiResponse[dict[str, object]]:
+    run = await _generation_service(request).get(tenant.tenant_id, run_id)
+    if run is None:
+        raise ApiServiceError(
+            "SKILL_CANDIDATE_GENERATION_NOT_FOUND",
+            "Candidate generation run not found",
+            404,
+        )
+    return ApiResponse.ok(run.to_dict())
 
 
 @router.post("/{candidate_id}/replay-pending")

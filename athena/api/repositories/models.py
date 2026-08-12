@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     Integer,
@@ -568,6 +569,51 @@ class LearningTrajectoryEventModel(Base):
     )
 
 
+class SkillCandidateGenerationRunModel(Base):
+    """Explicit model-generation audit record without raw provider responses."""
+
+    __tablename__ = "skill_candidate_generation_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "source_digest",
+            name="uq_skill_candidate_generation_source",
+        ),
+        CheckConstraint(
+            "status IN ('started', 'succeeded', 'failed', 'duplicate', 'rejected')",
+            name="ck_skill_candidate_generation_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(120), index=True)
+    source_digest: Mapped[str] = mapped_column(String(128), index=True)
+    source_trajectory_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(24), index=True)
+    digest_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    generator: Mapped[str] = mapped_column(String(96))
+    candidate_id: Mapped[str | None] = mapped_column(
+        String(96), nullable=True, index=True
+    )
+    validation_report_id: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    duplicate_of_candidate_id: Mapped[str | None] = mapped_column(
+        String(96), nullable=True
+    )
+    deduplication_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    model: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    usage_json: Mapped[dict[str, int]] = mapped_column(JSON, default=dict)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    failure_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(160))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class SkillCandidateValidationReportModel(Base):
     """Immutable deterministic validation result for one Candidate digest."""
 
@@ -612,6 +658,49 @@ class SkillBaselineRunModel(Base):
     case_count: Mapped[int] = mapped_column(Integer)
     oracle_pass_count: Mapped[int] = mapped_column(Integer)
     results_json: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now()
+    )
+
+
+class SkillReplayABRunModel(Base):
+    """Candidate-vs-Baseline Runtime observations and publication gate result."""
+
+    __tablename__ = "skill_replay_ab_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "candidate_id",
+            "candidate_digest",
+            "case_definition_digest",
+            "runner",
+            name="uq_skill_replay_ab_identity",
+        ),
+        CheckConstraint(
+            "status IN ('passed', 'rejected', 'evaluation_failed')",
+            name="ck_skill_replay_ab_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(120), index=True)
+    candidate_id: Mapped[str] = mapped_column(String(96), index=True)
+    candidate_digest: Mapped[str] = mapped_column(String(128), index=True)
+    validation_report_id: Mapped[str] = mapped_column(String(96))
+    schema_version: Mapped[str] = mapped_column(String(64))
+    case_definition_digest: Mapped[str] = mapped_column(String(128), index=True)
+    runner: Mapped[str] = mapped_column(String(96))
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    case_count: Mapped[int] = mapped_column(Integer)
+    comparisons_json: Mapped[list[dict[str, object]]] = mapped_column(
+        JSON, default=list
+    )
+    aggregate_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    gate_checks_json: Mapped[dict[str, bool]] = mapped_column(JSON, default=dict)
+    gate_passed: Mapped[bool] = mapped_column(Boolean, default=False)
+    failure_reason: Mapped[str | None] = mapped_column(String(160), nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(

@@ -11,8 +11,11 @@ from athena.config import AthenaSettings, K8sSettings, OpsSettings
 
 
 def test_ops_task_api_creates_scopes_and_replays_persisted_events() -> None:
-    client = TestClient(create_app(settings=AthenaSettings()))
+    with TestClient(create_app(settings=AthenaSettings())) as client:
+        _assert_ops_task_api(client)
 
+
+def _assert_ops_task_api(client: TestClient) -> None:
     created = client.post(
         "/api/ops/tasks",
         headers={"Idempotency-Key": "create-default-task"},

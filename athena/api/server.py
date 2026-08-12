@@ -67,7 +67,9 @@ from athena.api.routes import (
     skill_candidates,
 )
 from athena.api.repositories.skill_candidate_repository import SkillCandidateRepository
-from athena.api.repositories.skill_evaluation_repository import SkillEvaluationRepository
+from athena.api.repositories.skill_evaluation_repository import (
+    SkillEvaluationRepository,
+)
 from athena.api.schemas import ErrorResponse
 from athena.api.services import ApiServiceError, AthenaWebService, static_directory
 from athena.api.session_store import SessionStore
@@ -91,6 +93,9 @@ from athena.application.runtime_task_service import RuntimeTaskService
 from athena.application.runtime_learning_service import RuntimeLearningService
 from athena.application.operator_feedback_service import OperatorFeedbackService
 from athena.application.skill_candidate_service import SkillCandidateService
+from athena.application.skill_candidate_generation_service import (
+    SkillCandidateGenerationService,
+)
 from athena.application.skill_evaluation_service import SkillEvaluationService
 from athena.application.verified_learning_source_resolver import (
     DurableVerifiedLearningSourceResolver,
@@ -205,6 +210,55 @@ def _build_workflow_llm(settings: AthenaSettings) -> object | None:
         return None
 
 
+def _build_candidate_generator(settings: AthenaSettings) -> object | None:
+    """Build the explicit Candidate generator from existing provider/router ports."""
+
+    if not settings.llm.enabled:
+        return None
+    try:
+        from athena.infra.llm import LLMClientFactory
+        from athena.infra.model_router import ModelRouter
+        from athena.infra.resilience import (
+            ResilientLLMClient,
+            RetryPolicy,
+            make_breaker,
+        )
+        from athena.learning.candidate_generation import LLMCandidateGenerator
+
+        def resilient(model: str, breaker_name: str) -> object:
+            client = LLMClientFactory.create(
+                provider=settings.llm.provider,
+                model=model,
+                temperature=0.0,
+                max_tokens=settings.llm.max_tokens,
+            )
+            return ResilientLLMClient(
+                client,
+                retry_policy=RetryPolicy(),
+                breaker=make_breaker(breaker_name),
+            )
+
+        if settings.llm.routing.enabled:
+            routed = ModelRouter(
+                light=resilient(
+                    settings.llm.routing.light_model,
+                    "candidate-generator-light",
+                ),
+                heavy=resilient(
+                    settings.llm.routing.heavy_model,
+                    "candidate-generator-heavy",
+                ),
+                threshold=settings.llm.routing.threshold,
+            )
+            return LLMCandidateGenerator(routed)
+        return LLMCandidateGenerator(
+            resilient(settings.llm.model, "candidate-generator")
+        )
+    except Exception as exc:
+        logger.info("Candidate generator unavailable: %s", exc)
+        return None
+
+
 def create_app(
     settings: AthenaSettings | None = None, service: AthenaWebService | None = None
 ) -> FastAPI:
@@ -256,6 +310,7 @@ def create_app(
     app.state.operator_feedback_service = None
     app.state.skill_candidate_repository = None
     app.state.skill_candidate_service = None
+    app.state.skill_candidate_generation_service = None
     app.state.skill_evaluation_repository = None
     app.state.skill_evaluation_service = None
     app.state.verified_learning_source_resolver = None
@@ -330,7 +385,8 @@ def create_app(
             database.session_factory
         )
         app.state.skill_evaluation_service = SkillEvaluationService(
-            app.state.skill_evaluation_repository
+            app.state.skill_evaluation_repository,
+            candidate_repository=app.state.skill_candidate_repository,
         )
         app.state.durable_alert_service = DurableAlertService(
             app.state.task_repository,
@@ -396,6 +452,17 @@ def create_app(
         or resolved_settings.agent.execution_mode == "policy_workflow"
         else None
     )
+    candidate_generator = _build_candidate_generator(resolved_settings)
+    if (
+        app.state.skill_candidate_repository is not None
+        and app.state.skill_candidate_service is not None
+        and candidate_generator is not None
+    ):
+        app.state.skill_candidate_generation_service = SkillCandidateGenerationService(
+            app.state.skill_candidate_repository,
+            app.state.skill_candidate_service,
+            candidate_generator,
+        )
     web_service = service or AthenaWebService(
         agent_factory=lambda: build_agent(
             None

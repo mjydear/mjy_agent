@@ -22,6 +22,7 @@ from athena.learning.skill_candidate import (
     SkillCandidateModel,
     utc_or_none,
 )
+from athena.learning.candidate_generation import CandidateGenerationRun
 from athena.learning.skill_validation import SKILL_CANDIDATE_SCHEMA_VERSION
 from athena.learning.skill_validation import (
     CandidateValidationCategory,
@@ -37,6 +38,7 @@ from athena.runtime.learning import (
 from .models import (
     LearningTrajectoryEventModel,
     LearningTrajectoryModel,
+    SkillCandidateGenerationRunModel,
     SkillCandidateValidationReportModel,
 )
 
@@ -290,6 +292,154 @@ class SkillCandidateRepository:
             )
             return None if model is None else self._from_model(model)
 
+    async def get_by_source_digest(
+        self, tenant_id: str, source_digest: str
+    ) -> SkillCandidate | None:
+        async with self._sessions() as session:
+            model = await session.scalar(
+                select(SkillCandidateModel).where(
+                    SkillCandidateModel.tenant_id == tenant_id,
+                    SkillCandidateModel.source_digest == source_digest,
+                )
+            )
+            return None if model is None else self._from_model(model)
+
+    async def list_deduplication_candidates(
+        self, tenant_id: str, *, limit: int = 200
+    ) -> tuple[SkillCandidate, ...]:
+        """Return bounded, non-rejected Candidate projections for rule deduplication."""
+
+        async with self._sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(SkillCandidateModel)
+                    .where(
+                        SkillCandidateModel.tenant_id == tenant_id,
+                        SkillCandidateModel.status != REJECTED_STATUS,
+                    )
+                    .order_by(SkillCandidateModel.created_at.desc())
+                    .limit(limit)
+                )
+            ).all()
+            return tuple(self._from_model(row) for row in rows)
+
+    async def create_generation_run(
+        self, run: CandidateGenerationRun
+    ) -> tuple[CandidateGenerationRun, bool]:
+        """Elect one generator call per tenant-scoped trajectory source set."""
+
+        try:
+            async with self._sessions() as session:
+                async with session.begin():
+                    existing = await session.scalar(
+                        select(SkillCandidateGenerationRunModel).where(
+                            SkillCandidateGenerationRunModel.tenant_id == run.tenant_id,
+                            SkillCandidateGenerationRunModel.source_digest
+                            == run.source_digest,
+                        )
+                    )
+                    if existing is not None:
+                        return self._generation_from_model(existing), False
+                    model = SkillCandidateGenerationRunModel(
+                        id=run.run_id,
+                        tenant_id=run.tenant_id,
+                        source_digest=run.source_digest,
+                        source_trajectory_ids_json=list(run.source_trajectory_ids),
+                        status=run.status,
+                        digest_json=dict(run.digest),
+                        generator=run.generator,
+                        candidate_id=run.candidate_id,
+                        validation_report_id=run.validation_report_id,
+                        duplicate_of_candidate_id=run.duplicate_of_candidate_id,
+                        deduplication_json=dict(run.deduplication),
+                        model=run.model,
+                        usage_json=dict(run.usage),
+                        latency_ms=run.latency_ms,
+                        failure_code=run.failure_code,
+                        failure_message=run.failure_message,
+                        created_by=run.created_by,
+                        created_at=run.created_at,
+                        completed_at=run.completed_at,
+                    )
+                    session.add(model)
+                    await session.flush()
+                    return self._generation_from_model(model), True
+        except IntegrityError:
+            existing = await self.get_generation_by_source(
+                run.tenant_id, run.source_digest
+            )
+            if existing is None:
+                raise
+            return existing, False
+
+    async def complete_generation_run(
+        self,
+        tenant_id: str,
+        run_id: str,
+        *,
+        status: str,
+        candidate_id: str | None = None,
+        validation_report_id: str | None = None,
+        duplicate_of_candidate_id: str | None = None,
+        deduplication: dict[str, object] | None = None,
+        model: str | None = None,
+        usage: dict[str, int] | None = None,
+        latency_ms: int | None = None,
+        failure_code: str | None = None,
+        failure_message: str | None = None,
+    ) -> CandidateGenerationRun | None:
+        async with self._sessions() as session:
+            async with session.begin():
+                row = await session.scalar(
+                    select(SkillCandidateGenerationRunModel)
+                    .where(
+                        SkillCandidateGenerationRunModel.tenant_id == tenant_id,
+                        SkillCandidateGenerationRunModel.id == run_id,
+                    )
+                    .with_for_update()
+                )
+                if row is None:
+                    return None
+                if row.status != "started":
+                    return self._generation_from_model(row)
+                row.status = status
+                row.candidate_id = candidate_id
+                row.validation_report_id = validation_report_id
+                row.duplicate_of_candidate_id = duplicate_of_candidate_id
+                row.deduplication_json = dict(deduplication or {})
+                row.model = model
+                row.usage_json = dict(usage or {})
+                row.latency_ms = latency_ms
+                row.failure_code = failure_code
+                row.failure_message = failure_message
+                row.completed_at = datetime.now(UTC)
+                await session.flush()
+                return self._generation_from_model(row)
+
+    async def get_generation(
+        self, tenant_id: str, run_id: str
+    ) -> CandidateGenerationRun | None:
+        async with self._sessions() as session:
+            row = await session.scalar(
+                select(SkillCandidateGenerationRunModel).where(
+                    SkillCandidateGenerationRunModel.tenant_id == tenant_id,
+                    SkillCandidateGenerationRunModel.id == run_id,
+                )
+            )
+            return None if row is None else self._generation_from_model(row)
+
+    async def get_generation_by_source(
+        self, tenant_id: str, source_digest: str
+    ) -> CandidateGenerationRun | None:
+        async with self._sessions() as session:
+            row = await session.scalar(
+                select(SkillCandidateGenerationRunModel).where(
+                    SkillCandidateGenerationRunModel.tenant_id == tenant_id,
+                    SkillCandidateGenerationRunModel.source_digest == source_digest,
+                )
+            )
+            return None if row is None else self._generation_from_model(row)
+
     async def record_validation(
         self, report: CandidateValidationReport
     ) -> CandidateValidationReport:
@@ -371,6 +521,21 @@ class SkillCandidateRepository:
                     SkillCandidateValidationReportModel.tenant_id == tenant_id,
                     SkillCandidateValidationReportModel.id == report_id,
                 )
+            )
+            return None if model is None else self._validation_from_model(model)
+
+    async def latest_validation_for_candidate(
+        self, tenant_id: str, candidate_id: str
+    ) -> CandidateValidationReport | None:
+        async with self._sessions() as session:
+            model = await session.scalar(
+                select(SkillCandidateValidationReportModel)
+                .where(
+                    SkillCandidateValidationReportModel.tenant_id == tenant_id,
+                    SkillCandidateValidationReportModel.candidate_id == candidate_id,
+                )
+                .order_by(SkillCandidateValidationReportModel.validated_at.desc())
+                .limit(1)
             )
             return None if model is None else self._validation_from_model(model)
 
@@ -607,6 +772,36 @@ class SkillCandidateRepository:
                 for item in (model.violations_json or [])
             ),
             validated_at=utc_or_none(model.validated_at) or datetime.now(UTC),
+        )
+
+    @staticmethod
+    def _generation_from_model(
+        model: SkillCandidateGenerationRunModel,
+    ) -> CandidateGenerationRun:
+        return CandidateGenerationRun(
+            run_id=model.id,
+            tenant_id=model.tenant_id,
+            source_digest=model.source_digest,
+            source_trajectory_ids=tuple(model.source_trajectory_ids_json or ()),
+            status=model.status,
+            digest=dict(model.digest_json or {}),
+            generator=model.generator,
+            candidate_id=model.candidate_id,
+            validation_report_id=model.validation_report_id,
+            duplicate_of_candidate_id=model.duplicate_of_candidate_id,
+            deduplication=dict(model.deduplication_json or {}),
+            model=model.model,
+            usage={
+                str(key): int(value)
+                for key, value in dict(model.usage_json or {}).items()
+                if isinstance(value, int) and not isinstance(value, bool)
+            },
+            latency_ms=model.latency_ms,
+            failure_code=model.failure_code,
+            failure_message=model.failure_message,
+            created_by=model.created_by,
+            created_at=utc_or_none(model.created_at) or datetime.now(UTC),
+            completed_at=utc_or_none(model.completed_at),
         )
 
     @staticmethod

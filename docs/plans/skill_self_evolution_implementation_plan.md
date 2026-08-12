@@ -44,6 +44,23 @@ flowchart LR
 - Baseline 使用离线固定决策驱动真实 `AgentRuntime` 和只读工具执行，不加载 Candidate，不访问模型 Provider，仅记录实际 Task 状态、Tick、工具调用、Evidence、Usage、拒绝原因和耗时。
 - 本切片只形成供下一阶段比较的结构化 Baseline 结果；不实现 Candidate vs Baseline 比较、模型生成、Shadow、审批页面、发布或 Active Skill 修改。
 
+### P0 Candidate Replay A/B 切片（2026-08-12）
+
+- 通过显式 API 对已通过静态校验且仍处于 `candidate` 的 Candidate 启动固定 12 Case Replay A/B；同一 Candidate、定义摘要和 Runner 版本具有确定性运行标识，重复请求返回同一报告。
+- 每个 Case 的 Baseline 与 Candidate 分别使用隔离的真实 `AgentRuntime` 执行两次。Baseline 不加载 Candidate；Candidate 以受限投影进入 Runtime Context，并由决策引擎实际读取。
+- 报告持久化逐 Case 正确性、Evidence、答案结构、Tick、工具调用、输入/输出/总 Token、延迟样本、重试、安全探针、超时、回滚、人工介入和重复一致性，以及两组聚合值、绝对差和相对变化。
+- P0 门禁覆盖 Candidate 解析/加载、安全违规、非法工具执行、越权、高风险动作、注入、敏感值泄漏、成功率、Evidence、Token、Tick、工具调用、关键 Case、工具失败、回滚和重复一致性。
+- 门禁通过只写入 `replay_ab_passed`；门禁失败将 Candidate 置为 `rejected/evaluation_failed`，执行异常也安全落为 `evaluation_failed`；Candidate 始终保持非 Active 且 `activation_allowed=false`。
+- 本切片不实现 Shadow、人工审批、发布、回滚执行、前端或 Active Skill 修改。
+
+### P0 Candidate Runtime Token 优化（2026-08-12）
+
+- Replay A/B Runner v2 将 Candidate 拆分为三层：首次仅加载 `Skill Index`；Trigger 高相关匹配后才加载 `Skill Procedure`；匹配且具备失败恢复或安全意图时才加载 `Skill Reference`。
+- `Skill Index` 严格只包含 `name`、`description`、`trigger`、`risk_level`；Procedure 和 Reference 在注入前去除与 Task、Working State、Running Summary 和 Evidence 完全重复的文本。
+- 每个 Task 的 Candidate 层最多注入一次，后续 ReAct Tick 使用首次读取后缓存的加载状态，不重复把 Skill 内容放入 Runtime Context。
+- 逐 Case 报告持久化实际加载层、加载与读取次数、注入 Tick、避免重复注入次数、分层 Token 和工具声明过滤 Token 差异；工具白名单和安全门禁不变。
+- Runner 版本升级会为同一 Candidate 生成新的幂等评测身份；旧 Runner 拒绝的 Candidate 可原位重评，通过后只恢复为 `candidate/replay_ab_passed`，不会进入 Active。
+
 ## 2. 总体架构
 
 ```mermaid

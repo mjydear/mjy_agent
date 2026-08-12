@@ -141,7 +141,7 @@ class SkillCandidateService:
         skill_id_digest = hashlib.sha256(
             f"{proposal.tenant_id}:{normalized_name}".encode("utf-8")
         ).hexdigest()[:24]
-        skill_id = f"candidate-skill-{skill_id_digest}"
+        skill_id = proposal.skill_id or f"candidate-skill-{skill_id_digest}"
         evidence_ids = tuple(
             dict.fromkeys(
                 str(item["evidence_id"])

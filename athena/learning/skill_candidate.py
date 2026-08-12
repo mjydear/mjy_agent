@@ -80,6 +80,7 @@ class TrajectorySkillCandidateProposal:
     created_by: str
     version: int = 1
     risk_level: str = "S1"
+    skill_id: str | None = None
 
 
 @dataclass(frozen=True)

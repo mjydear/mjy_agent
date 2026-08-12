@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
+from athena.api.repositories.skill_candidate_repository import (
+    SkillCandidateRepository,
+)
 from athena.runtime.learning import (
     OperatorFeedback,
     ReplayCase,
@@ -16,24 +19,61 @@ from athena.runtime.learning import (
     RuntimeSkillShadowEvaluator,
     RuntimeSkillCandidate,
     ShadowCase,
+    TrajectorySummary,
+    TrajectorySummaryBuilder,
 )
 
 
 class RuntimeLearningService:
     """Keep candidates local to the Runtime adapter until durable Skill storage is added."""
 
-    def __init__(self, store: Any, *, min_evidence: int = 3) -> None:
+    def __init__(
+        self,
+        store: Any,
+        repository: SkillCandidateRepository | None = None,
+        *,
+        min_evidence: int = 3,
+    ) -> None:
         self._store = store
+        self._repository = repository
+        self._trajectory_builder = TrajectorySummaryBuilder()
         self._observer = RuntimeSkillLearningObserver(min_evidence=min_evidence)
         self._lifecycle = RuntimeSkillLearningLifecycle()
         self._replay = RuntimeSkillReplayEvaluator()
         self._shadow = RuntimeSkillShadowEvaluator()
         self._candidates: dict[str, RuntimeSkillCandidate] = {}
 
-    def observe(
+    async def capture_trajectory(
+        self, task_id: str, *, tenant_id: str
+    ) -> dict[str, object]:
+        summary = self._trajectory_builder.build(
+            self._store.snapshot(task_id), tenant_id=tenant_id
+        )
+        if self._repository is not None:
+            summary = await self._repository.save_trajectory(summary)
+        return self._trajectory_view(summary)
+
+    async def trajectory(
+        self, trajectory_id: str, *, tenant_id: str
+    ) -> dict[str, object]:
+        if self._repository is None:
+            raise RuntimeSkillLearningError("RUNTIME_TRAJECTORY_STORE_UNAVAILABLE")
+        summary = await self._repository.get_trajectory(tenant_id, trajectory_id)
+        if summary is None:
+            raise RuntimeSkillLearningError("RUNTIME_TRAJECTORY_NOT_FOUND")
+        result = self._trajectory_view(summary)
+        result["events"] = list(
+            await self._repository.list_trajectory_events(
+                tenant_id, trajectory_id
+            )
+        )
+        return result
+
+    async def observe(
         self,
         task_id: str,
         *,
+        tenant_id: str,
         feedback_id: str,
         accepted: bool,
         verified: bool,
@@ -41,6 +81,23 @@ class RuntimeLearningService:
         submitted_by: str,
     ) -> dict[str, object]:
         snapshot = self._store.snapshot(task_id)
+        trajectory = self._trajectory_builder.build(
+            snapshot, tenant_id=tenant_id
+        )
+        if self._repository is not None:
+            trajectory = await self._repository.save_trajectory(trajectory)
+        if not trajectory.admission.eligible:
+            return {
+                "candidate": None,
+                "blocked_reason": trajectory.admission.rejection_reasons[0],
+                "details": {
+                    "rejection_reasons": list(
+                        trajectory.admission.rejection_reasons
+                    ),
+                    "quality_score": trajectory.admission.quality_score,
+                },
+                "trajectory": self._trajectory_view(trajectory),
+            }
         result = self._observer.observe_completed_task(
             snapshot,
             OperatorFeedback(
@@ -57,6 +114,7 @@ class RuntimeLearningService:
             "candidate": self._candidate_view(result.candidate) if result.candidate else None,
             "blocked_reason": result.blocked_reason,
             "details": result.details,
+            "trajectory": self._trajectory_view(trajectory),
         }
 
     def list(self) -> dict[str, object]:
@@ -123,6 +181,10 @@ class RuntimeLearningService:
             "handoff_ready": candidate.handoff_ready,
             "activation_allowed": False,
         }
+
+    @staticmethod
+    def _trajectory_view(summary: TrajectorySummary) -> dict[str, object]:
+        return summary.to_dict()
 
     @staticmethod
     def _replay_case(value: dict[str, object]) -> ReplayCase:

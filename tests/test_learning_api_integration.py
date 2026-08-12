@@ -94,11 +94,23 @@ def test_server_import_mounts_learning_routes_and_wires_durable_services(tmp_pat
     server = importlib.import_module("athena.api.server")
     app = server.create_app(settings=_settings(tmp_path), service=_service())
     try:
-        routes = {route.path for route in app.routes}
+        routes = {
+            nested.path
+            for route in app.routes
+            for nested in (
+                (route,)
+                if hasattr(route, "path")
+                else tuple(route.original_router.routes)
+            )
+            if hasattr(nested, "path")
+        }
         assert "/api/diagnosis-outcomes/tasks/{task_id}/finalize" in routes
         assert "/api/diagnosis-outcomes/{outcome_id}/feedback" in routes
         assert "/api/skill-candidates" in routes
+        assert "/api/skill-candidates/from-trajectories" in routes
         assert "/api/skill-candidates/{candidate_id}/bridge" in routes
+        assert "/api/runtime/skills/tasks/{task_id}/trajectory" in routes
+        assert "/api/runtime/skills/trajectories/{trajectory_id}" in routes
         assert app.state.diagnosis_outcome_service is not None
         assert app.state.operator_feedback_service is not None
         assert app.state.skill_candidate_service is not None

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -20,6 +21,23 @@ from athena.learning.skill_candidate import (
     SkillCandidateLifecycleError,
     SkillCandidateModel,
     utc_or_none,
+)
+from athena.learning.skill_validation import SKILL_CANDIDATE_SCHEMA_VERSION
+from athena.learning.skill_validation import (
+    CandidateValidationCategory,
+    CandidateValidationReport,
+    CandidateValidationViolation,
+)
+from athena.runtime.learning import (
+    TrajectoryAdmission,
+    TrajectoryStatus,
+    TrajectorySummary,
+)
+
+from .models import (
+    LearningTrajectoryEventModel,
+    LearningTrajectoryModel,
+    SkillCandidateValidationReportModel,
 )
 
 
@@ -50,6 +68,19 @@ class SkillCandidateRepository:
         source_digest: str,
         source_summary: dict[str, object],
         created_by: str,
+        schema_version: str = SKILL_CANDIDATE_SCHEMA_VERSION,
+        skill_id: str | None = None,
+        version: int = 1,
+        description: str = "",
+        trigger: dict[str, object] | None = None,
+        allowed_tools: tuple[str, ...] = (),
+        failure_recovery: tuple[str, ...] = (),
+        success_contract: dict[str, object] | None = None,
+        evidence_requirements: tuple[str, ...] = (),
+        token_budget_hint: int = 0,
+        source_trajectory_ids: tuple[str, ...] = (),
+        evaluation_status: str = "not_evaluated",
+        risk_level: str = "S1",
     ) -> SkillCandidate:
         """Create one candidate per tenant-scoped source digest, idempotently."""
 
@@ -80,6 +111,33 @@ class SkillCandidateRepository:
                         source_digest=source_digest,
                         source_summary_json=dict(source_summary),
                         created_by=created_by,
+                        schema_version=schema_version,
+                        skill_id=skill_id or candidate_id,
+                        version=version,
+                        description=description,
+                        trigger_json=dict(trigger or {}),
+                        allowed_tools_json=list(allowed_tools),
+                        failure_recovery_json=list(failure_recovery),
+                        success_contract_json=dict(success_contract or {}),
+                        evidence_requirements_json=list(evidence_requirements),
+                        token_budget_hint=token_budget_hint,
+                        source_trajectory_ids_json=list(source_trajectory_ids),
+                        evaluation_status=evaluation_status,
+                        risk_level=risk_level,
+                        audit_events_json=[
+                            {
+                                "kind": "candidate.created",
+                                "at": datetime.now(UTC).isoformat(),
+                                "from_status": TrajectoryStatus.ELIGIBLE.value
+                                if source_trajectory_ids
+                                else None,
+                                "to_status": CANDIDATE_STATUS,
+                                "source_trajectory_ids": list(
+                                    source_trajectory_ids
+                                ),
+                                "activation_allowed": False,
+                            }
+                        ],
                     )
                     session.add(model)
                     await session.flush()
@@ -97,6 +155,131 @@ class SkillCandidateRepository:
                 raise
             return self._from_model(existing)
 
+    async def save_trajectory(self, summary: TrajectorySummary) -> TrajectorySummary:
+        """Persist one immutable redacted summary and both admission events."""
+
+        if summary.contains_raw_artifacts or summary.contains_hidden_reasoning:
+            raise ValueError("unsafe trajectory payload cannot be persisted")
+        try:
+            async with self._sessions() as session:
+                async with session.begin():
+                    existing = await session.scalar(
+                        select(LearningTrajectoryModel).where(
+                            LearningTrajectoryModel.tenant_id == summary.tenant_id,
+                            LearningTrajectoryModel.source_task_id
+                            == summary.source_task_id,
+                        )
+                    )
+                    if existing is not None:
+                        return self._trajectory_from_model(existing)
+                    admission = self._admission_json(summary.admission)
+                    model = LearningTrajectoryModel(
+                        id=summary.trajectory_id,
+                        tenant_id=summary.tenant_id,
+                        source_task_id=summary.source_task_id,
+                        schema_version=summary.schema_version,
+                        status=summary.status.value,
+                        task_summary=summary.task_summary,
+                        outcome_summary_json=dict(summary.outcome_summary),
+                        tool_calls_json=[dict(item) for item in summary.tool_calls],
+                        evidence_json=[dict(item) for item in summary.evidence],
+                        usage_json=dict(summary.usage),
+                        budget_json=dict(summary.budget),
+                        admission_json=admission,
+                        quality_score=summary.admission.quality_score,
+                        rejection_reasons_json=list(
+                            summary.admission.rejection_reasons
+                        ),
+                        redaction_count=summary.redaction_count,
+                        contains_raw_artifacts=False,
+                        contains_hidden_reasoning=False,
+                        admitted_at=summary.created_at,
+                        created_at=summary.created_at,
+                        updated_at=summary.created_at,
+                    )
+                    session.add(model)
+                    session.add_all(
+                        [
+                            LearningTrajectoryEventModel(
+                                id=f"trajectory-event-{uuid4().hex}",
+                                tenant_id=summary.tenant_id,
+                                trajectory_id=summary.trajectory_id,
+                                kind="trajectory.observed",
+                                from_status=None,
+                                to_status=TrajectoryStatus.OBSERVED.value,
+                                details_json={
+                                    "schema_version": summary.schema_version,
+                                    "raw_artifacts_included": False,
+                                    "hidden_reasoning_included": False,
+                                },
+                                created_at=summary.created_at,
+                            ),
+                            LearningTrajectoryEventModel(
+                                id=f"trajectory-event-{uuid4().hex}",
+                                tenant_id=summary.tenant_id,
+                                trajectory_id=summary.trajectory_id,
+                                kind="trajectory.admitted",
+                                from_status=TrajectoryStatus.OBSERVED.value,
+                                to_status=summary.status.value,
+                                details_json={
+                                    "quality_score": summary.admission.quality_score,
+                                    "rejection_reasons": list(
+                                        summary.admission.rejection_reasons
+                                    ),
+                                },
+                                created_at=summary.created_at,
+                            ),
+                        ]
+                    )
+                    await session.flush()
+                    return self._trajectory_from_model(model)
+        except IntegrityError:
+            existing = await self.get_trajectory(
+                summary.tenant_id, summary.trajectory_id
+            )
+            if existing is None:
+                raise
+            return existing
+
+    async def get_trajectory(
+        self, tenant_id: str, trajectory_id: str
+    ) -> TrajectorySummary | None:
+        async with self._sessions() as session:
+            model = await session.scalar(
+                select(LearningTrajectoryModel).where(
+                    LearningTrajectoryModel.tenant_id == tenant_id,
+                    LearningTrajectoryModel.id == trajectory_id,
+                )
+            )
+            return None if model is None else self._trajectory_from_model(model)
+
+    async def list_trajectory_events(
+        self, tenant_id: str, trajectory_id: str
+    ) -> tuple[dict[str, object], ...]:
+        async with self._sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(LearningTrajectoryEventModel)
+                    .where(
+                        LearningTrajectoryEventModel.tenant_id == tenant_id,
+                        LearningTrajectoryEventModel.trajectory_id == trajectory_id,
+                    )
+                    .order_by(LearningTrajectoryEventModel.created_at)
+                )
+            ).all()
+            return tuple(
+                {
+                    "kind": row.kind,
+                    "from_status": row.from_status,
+                    "to_status": row.to_status,
+                    "details": dict(row.details_json or {}),
+                    "created_at": utc_or_none(row.created_at).isoformat()
+                    if utc_or_none(row.created_at)
+                    else None,
+                }
+                for row in rows
+            )
+
     async def get(self, tenant_id: str, candidate_id: str) -> SkillCandidate | None:
         async with self._sessions() as session:
             model = await session.scalar(
@@ -106,6 +289,90 @@ class SkillCandidateRepository:
                 )
             )
             return None if model is None else self._from_model(model)
+
+    async def record_validation(
+        self, report: CandidateValidationReport
+    ) -> CandidateValidationReport:
+        """Persist one deterministic report and apply its non-Active outcome."""
+
+        async with self._sessions() as session:
+            async with session.begin():
+                existing = await session.scalar(
+                    select(SkillCandidateValidationReportModel).where(
+                        SkillCandidateValidationReportModel.tenant_id
+                        == report.tenant_id,
+                        SkillCandidateValidationReportModel.id == report.report_id,
+                    )
+                )
+                if existing is not None:
+                    return self._validation_from_model(existing)
+                candidate = await session.scalar(
+                    select(SkillCandidateModel)
+                    .where(
+                        SkillCandidateModel.tenant_id == report.tenant_id,
+                        SkillCandidateModel.id == report.candidate_id,
+                    )
+                    .with_for_update()
+                )
+                if candidate is None:
+                    raise SkillCandidateLifecycleError("SKILL_CANDIDATE_NOT_FOUND")
+                if candidate.status not in {CANDIDATE_STATUS, REJECTED_STATUS}:
+                    raise SkillCandidateLifecycleError(
+                        "SKILL_CANDIDATE_VALIDATION_STATE_INVALID"
+                    )
+                if candidate.status == REJECTED_STATUS and report.passed:
+                    raise SkillCandidateLifecycleError("SKILL_CANDIDATE_REJECTED_FINAL")
+                target_status = CANDIDATE_STATUS if report.passed else REJECTED_STATUS
+                previous_status = candidate.status
+                candidate.status = target_status
+                candidate.evaluation_status = (
+                    "validation_passed" if report.passed else "validation_failed"
+                )
+                if not report.passed:
+                    candidate.decided_at = report.validated_at
+                candidate.audit_events_json = [
+                    *(candidate.audit_events_json or []),
+                    {
+                        "kind": "candidate.validated",
+                        "at": report.validated_at.isoformat(),
+                        "report_id": report.report_id,
+                        "from_status": previous_status,
+                        "to_status": target_status,
+                        "evaluation_status": candidate.evaluation_status,
+                        "schema_valid": report.schema_valid,
+                        "security_valid": report.security_valid,
+                        "violation_codes": [item.code for item in report.violations],
+                        "activation_allowed": False,
+                    },
+                ]
+                model = SkillCandidateValidationReportModel(
+                    id=report.report_id,
+                    tenant_id=report.tenant_id,
+                    candidate_id=report.candidate_id,
+                    candidate_digest=report.candidate_digest,
+                    validator_version=report.validator_version,
+                    schema_valid=report.schema_valid,
+                    security_valid=report.security_valid,
+                    passed=report.passed,
+                    checks_json=dict(report.checks),
+                    violations_json=[item.to_dict() for item in report.violations],
+                    validated_at=report.validated_at,
+                )
+                session.add(model)
+                await session.flush()
+                return self._validation_from_model(model)
+
+    async def get_validation(
+        self, tenant_id: str, report_id: str
+    ) -> CandidateValidationReport | None:
+        async with self._sessions() as session:
+            model = await session.scalar(
+                select(SkillCandidateValidationReportModel).where(
+                    SkillCandidateValidationReportModel.tenant_id == tenant_id,
+                    SkillCandidateValidationReportModel.id == report_id,
+                )
+            )
+            return None if model is None else self._validation_from_model(model)
 
     async def mark_replay_pending(
         self, tenant_id: str, candidate_id: str
@@ -237,6 +504,7 @@ class SkillCandidateRepository:
                     raise SkillCandidateLifecycleError(
                         "SKILL_CANDIDATE_INVALID_TRANSITION"
                     )
+                previous_status = model.status
                 model.status = target
                 if replay_report_id is not None:
                     model.replay_report_id = replay_report_id
@@ -248,6 +516,16 @@ class SkillCandidateRepository:
                     model.review_note = review_note
                 if decided_at is not None:
                     model.decided_at = decided_at
+                model.audit_events_json = [
+                    *(model.audit_events_json or []),
+                    {
+                        "kind": "candidate.transition",
+                        "at": datetime.now(UTC).isoformat(),
+                        "from_status": previous_status,
+                        "to_status": target,
+                        "activation_allowed": False,
+                    },
+                ]
                 return self._from_model(model)
 
     @staticmethod
@@ -268,11 +546,122 @@ class SkillCandidateRepository:
             source_digest=model.source_digest,
             source_summary=dict(model.source_summary_json or {}),
             created_by=model.created_by,
+            schema_version=model.schema_version,
+            skill_id=model.skill_id,
+            version=model.version,
+            description=model.description,
+            trigger=dict(model.trigger_json or {}),
+            allowed_tools=tuple(model.allowed_tools_json or ()),
+            failure_recovery=tuple(model.failure_recovery_json or ()),
+            success_contract=dict(model.success_contract_json or {}),
+            evidence_requirements=tuple(model.evidence_requirements_json or ()),
+            token_budget_hint=model.token_budget_hint,
+            source_trajectory_ids=tuple(model.source_trajectory_ids_json or ()),
+            evaluation_status=model.evaluation_status,
+            risk_level=model.risk_level,
+            audit_events=tuple(model.audit_events_json or ()),
             replay_report_id=model.replay_report_id,
             shadow_report_id=model.shadow_report_id,
             reviewed_by=model.reviewed_by,
             review_note=model.review_note,
             decided_at=utc_or_none(model.decided_at),
+        )
+
+    @staticmethod
+    def _admission_json(admission: TrajectoryAdmission) -> dict[str, object]:
+        return {
+            "eligible": admission.eligible,
+            "rejection_reasons": list(admission.rejection_reasons),
+            "quality_score": admission.quality_score,
+            "quality_factors": dict(admission.quality_factors),
+            "quality_explanations": list(admission.quality_explanations),
+            "checks": dict(admission.checks),
+        }
+
+    @staticmethod
+    def _validation_from_model(
+        model: SkillCandidateValidationReportModel,
+    ) -> CandidateValidationReport:
+        return CandidateValidationReport(
+            report_id=model.id,
+            tenant_id=model.tenant_id,
+            candidate_id=model.candidate_id,
+            candidate_digest=model.candidate_digest,
+            validator_version=model.validator_version,
+            schema_valid=model.schema_valid,
+            security_valid=model.security_valid,
+            passed=model.passed,
+            checks={
+                str(key): bool(value)
+                for key, value in dict(model.checks_json or {}).items()
+            },
+            violations=tuple(
+                CandidateValidationViolation(
+                    code=str(item.get("code") or "CANDIDATE_VALIDATION_FAILED"),
+                    category=CandidateValidationCategory(
+                        str(item.get("category") or "schema")
+                    ),
+                    field=str(item.get("field") or "candidate"),
+                    message=str(item.get("message") or "Candidate validation failed."),
+                )
+                for item in (model.violations_json or [])
+            ),
+            validated_at=utc_or_none(model.validated_at) or datetime.now(UTC),
+        )
+
+    @staticmethod
+    def _trajectory_from_model(model: LearningTrajectoryModel) -> TrajectorySummary:
+        admission_raw = dict(model.admission_json or {})
+        admission = TrajectoryAdmission(
+            eligible=bool(admission_raw.get("eligible")),
+            rejection_reasons=tuple(
+                str(item)
+                for item in admission_raw.get("rejection_reasons", [])
+            ),
+            quality_score=float(admission_raw.get("quality_score", 0.0)),
+            quality_factors={
+                str(key): float(value)
+                for key, value in dict(
+                    admission_raw.get("quality_factors") or {}
+                ).items()
+            },
+            quality_explanations=tuple(
+                str(item)
+                for item in admission_raw.get("quality_explanations", [])
+            ),
+            checks={
+                str(key): bool(value)
+                for key, value in dict(admission_raw.get("checks") or {}).items()
+            },
+        )
+        return TrajectorySummary(
+            trajectory_id=model.id,
+            tenant_id=model.tenant_id,
+            source_task_id=model.source_task_id,
+            schema_version=model.schema_version,
+            status=TrajectoryStatus(model.status),
+            task_summary=model.task_summary,
+            outcome_summary={
+                str(key): str(value)
+                for key, value in dict(model.outcome_summary_json or {}).items()
+            },
+            tool_calls=tuple(
+                dict(item) for item in (model.tool_calls_json or [])
+            ),
+            evidence=tuple(
+                {
+                    str(key): str(value)
+                    for key, value in dict(item).items()
+                }
+                for item in (model.evidence_json or [])
+            ),
+            usage=dict(model.usage_json or {}),
+            budget=dict(model.budget_json or {}),
+            admission=admission,
+            redaction_count=model.redaction_count,
+            created_at=utc_or_none(model.created_at) or datetime.now(UTC),
+            contains_raw_artifacts=model.contains_raw_artifacts,
+            contains_hidden_reasoning=model.contains_hidden_reasoning,
         )
 
 

@@ -59,6 +59,7 @@ from athena.api.routes import (
     prometheus,
     runtime_learning,
     runtime_tasks,
+    skill_evaluation,
     session,
     tasks,
     traces,
@@ -66,6 +67,7 @@ from athena.api.routes import (
     skill_candidates,
 )
 from athena.api.repositories.skill_candidate_repository import SkillCandidateRepository
+from athena.api.repositories.skill_evaluation_repository import SkillEvaluationRepository
 from athena.api.schemas import ErrorResponse
 from athena.api.services import ApiServiceError, AthenaWebService, static_directory
 from athena.api.session_store import SessionStore
@@ -89,6 +91,7 @@ from athena.application.runtime_task_service import RuntimeTaskService
 from athena.application.runtime_learning_service import RuntimeLearningService
 from athena.application.operator_feedback_service import OperatorFeedbackService
 from athena.application.skill_candidate_service import SkillCandidateService
+from athena.application.skill_evaluation_service import SkillEvaluationService
 from athena.application.verified_learning_source_resolver import (
     DurableVerifiedLearningSourceResolver,
 )
@@ -253,6 +256,8 @@ def create_app(
     app.state.operator_feedback_service = None
     app.state.skill_candidate_repository = None
     app.state.skill_candidate_service = None
+    app.state.skill_evaluation_repository = None
+    app.state.skill_evaluation_service = None
     app.state.verified_learning_source_resolver = None
     app.state.environment_repository = None
     app.state.operation_plan_repository = None
@@ -320,6 +325,12 @@ def create_app(
         app.state.skill_candidate_service = SkillCandidateService(
             app.state.skill_candidate_repository,
             app.state.verified_learning_source_resolver,
+        )
+        app.state.skill_evaluation_repository = SkillEvaluationRepository(
+            database.session_factory
+        )
+        app.state.skill_evaluation_service = SkillEvaluationService(
+            app.state.skill_evaluation_repository
         )
         app.state.durable_alert_service = DurableAlertService(
             app.state.task_repository,
@@ -508,7 +519,10 @@ def create_app(
         decision_mode=runtime_assembly.decision_mode,
         memory_strategy=runtime_assembly.memory_strategy,
     )
-    app.state.runtime_learning_service = RuntimeLearningService(app.state.runtime_store)
+    app.state.runtime_learning_service = RuntimeLearningService(
+        app.state.runtime_store,
+        app.state.skill_candidate_repository,
+    )
     app.state.rate_limiter = HierarchicalRateLimiter(
         app.state.cache,
         global_per_minute=resolved_settings.rate_limit.global_per_minute,
@@ -688,6 +702,7 @@ def _mount_routes(app: FastAPI) -> None:
     app.include_router(alerts.router)  # 告警接入：/api/alerts/webhook
     app.include_router(diagnosis_outcomes.router)
     app.include_router(skill_candidates.router)
+    app.include_router(skill_evaluation.router)
     app.include_router(health.router)  # 健康探针：/healthz 存活、/readyz 就绪
 
 

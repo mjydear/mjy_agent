@@ -22,12 +22,22 @@ from athena.evaluation.live_k8s import (
     LiveK8sOracle,
     LiveOracleScore,
 )
+from athena.evaluation.skill_replay import (
+    BaselineCaseResult,
+    BaselineRun,
+    ReplayCase,
+    ReplayCaseCategory,
+    SkillBaselineRunner,
+    fixed_replay_cases,
+)
 
 __all__ = [
     "BenchmarkCase",
     "BenchmarkEngine",
     "BenchmarkReport",
     "BenchmarkResult",
+    "BaselineCaseResult",
+    "BaselineRun",
     "LiveBenchmarkArtifactWriter",
     "LiveBenchmarkCandidate",
     "LiveBenchmarkCaseResult",
@@ -42,6 +52,10 @@ __all__ = [
     "ProviderBenchmarkCase",
     "ProviderBenchmarkRecord",
     "ProviderBenchmarkRunner",
+    "ReplayCase",
+    "ReplayCaseCategory",
+    "SkillBaselineRunner",
     "build_messages",
+    "fixed_replay_cases",
     "summarize_records",
 ]

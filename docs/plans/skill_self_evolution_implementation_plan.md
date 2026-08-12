@@ -25,6 +25,25 @@ flowchart LR
 
 第一版不支持自动修改代码、部署、删除文件、安装系统软件、任意宿主机操作或无限自动学习循环。
 
+### P0 基础数据与轨迹准入切片（2026-08-12）
+
+已落地的基础边界：
+
+- `TrajectorySummary` 只持久化脱敏任务/结果摘要、工具名与结果状态、Evidence 引用摘要、Usage 和预算汇总；不包含 Artifact 原文、工具参数、仓库根目录、原始 Prompt/Response 或隐藏推理。
+- 轨迹状态固定为 `Observed -> Eligible | Rejected`。准入同时要求任务成功、Evidence 完整、无安全违规、无工具越权且未超过 Token/Tick 预算；拒绝原因和五项加权质量分均持久化。
+- `Eligible -> Candidate` 只能由显式结构化请求触发，不调用模型生成 Skill。Candidate 必含工具白名单、Procedure、失败恢复、成功契约、Evidence 要求、预算提示、来源轨迹、评测状态与风险级别。
+- Candidate 初始状态强制为 `candidate`、评测状态强制为 `not_evaluated`、风险限制为只读 `S1`；数据库约束和应用服务均不提供直接进入 `active` 的路径。
+- 本切片不新增发布、Shadow、前端、写文件、任意 Shell、部署或删除能力，也不修改任何现有 Active Skill。
+
+### P0 Candidate 校验与固定 Baseline 切片（2026-08-12）
+
+- Candidate 使用显式版本化 Schema，并通过确定性 Validator 校验必填字段、版本、成功契约、来源 Eligible 轨迹和 Candidate-only Manifest 不变量。
+- `allowed_tools` 必须来自 Runtime 当前只读工具目录；工具的 `readonly`、风险级别、Capability 和参数 Schema 复用 Runtime 的 `ToolSpecV2` 与参数校验规则。未知工具、写工具、服务器控制参数和不可见双向控制字符均拒绝。
+- 校验报告独立持久化；通过时 Candidate 仍保持 `candidate`，失败时只能进入 `rejected`。两种结果都保留审计事件且 `activation_allowed=false`。
+- 固定 Replay Case 共 12 个：4 个简单只读任务、4 个多步骤代码诊断、2 个真实工具失败、2 个安全拒绝。每个 Case 固定输入、夹具、工具策略、Evidence、Tick/工具调用上限和确定性 Oracle。
+- Baseline 使用离线固定决策驱动真实 `AgentRuntime` 和只读工具执行，不加载 Candidate，不访问模型 Provider，仅记录实际 Task 状态、Tick、工具调用、Evidence、Usage、拒绝原因和耗时。
+- 本切片只形成供下一阶段比较的结构化 Baseline 结果；不实现 Candidate vs Baseline 比较、模型生成、Shadow、审批页面、发布或 Active Skill 修改。
+
 ## 2. 总体架构
 
 ```mermaid

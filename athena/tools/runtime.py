@@ -299,7 +299,7 @@ class ToolRuntime:
             return "RISK_LEVEL_FORBIDDEN"
         if not set(spec.required_capabilities).issubset(context.allowed_capabilities):
             return "CAPABILITY_FORBIDDEN"
-        schema_error = self._validate_schema(spec.input_schema, call.arguments)
+        schema_error = self.validate_arguments(spec.input_schema, call.arguments)
         if schema_error is not None:
             return schema_error
         namespace = call.arguments.get("namespace")
@@ -311,9 +311,11 @@ class ToolRuntime:
         return None
 
     @staticmethod
-    def _validate_schema(
+    def validate_arguments(
         schema: Mapping[str, JSONValue], arguments: Mapping[str, JSONValue]
     ) -> str | None:
+        """Validate model-supplied arguments against a governed tool schema."""
+
         required = schema.get("required", [])
         if isinstance(required, list):
             missing = [

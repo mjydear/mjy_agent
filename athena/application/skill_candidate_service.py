@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 from athena.api.repositories.skill_candidate_repository import (
@@ -18,11 +19,18 @@ from athena.learning.skill_candidate import (
     SkillCandidateLifecycleError,
     SkillCandidateProposal,
     SkillCandidateSourceError,
+    TrajectorySkillCandidateProposal,
     VerifiedLearningSource,
     VerifiedLearningSourceResolver,
     normalize_safe_summary,
     source_digest,
+    trajectory_source_digest,
 )
+from athena.runtime.learning import TrajectoryStatus
+from athena.runtime.tools import ReadOnlyToolCatalog
+from athena.learning.skill_validation import SKILL_CANDIDATE_SCHEMA_VERSION
+from athena.learning.skill_validation import CandidateValidationReport
+from athena.application.skill_candidate_validator import SkillCandidateValidator
 
 
 class SkillCandidateService:
@@ -31,10 +39,12 @@ class SkillCandidateService:
     def __init__(
         self,
         repository: SkillCandidateRepository,
-        source_resolver: VerifiedLearningSourceResolver,
+        source_resolver: VerifiedLearningSourceResolver | None = None,
+        validator: SkillCandidateValidator | None = None,
     ) -> None:
         self._repository = repository
         self._source_resolver = source_resolver
+        self._validator = validator or SkillCandidateValidator()
 
     async def propose(self, proposal: SkillCandidateProposal) -> SkillCandidate:
         """Create or return one candidate for a verified source set.
@@ -44,6 +54,8 @@ class SkillCandidateService:
         """
 
         self._validate_proposal(proposal)
+        if self._source_resolver is None:
+            raise SkillCandidateSourceError("SKILL_CANDIDATE_SOURCE_UNAVAILABLE")
         source = await self._source_resolver.resolve(
             proposal.tenant_id,
             outcome_id=proposal.outcome_id,
@@ -79,12 +91,138 @@ class SkillCandidateService:
             created_by=proposal.created_by.strip(),
         )
 
+    async def propose_from_trajectories(
+        self, proposal: TrajectorySkillCandidateProposal
+    ) -> SkillCandidate:
+        """Persist a Candidate only after every source trajectory is Eligible."""
+
+        self._validate_trajectory_proposal(proposal)
+        trajectories = []
+        for trajectory_id in proposal.source_trajectory_ids:
+            trajectory = await self._repository.get_trajectory(
+                proposal.tenant_id, trajectory_id
+            )
+            if trajectory is None:
+                raise SkillCandidateSourceError(
+                    "SKILL_CANDIDATE_TRAJECTORY_NOT_FOUND"
+                )
+            if (
+                trajectory.status is not TrajectoryStatus.ELIGIBLE
+                or not trajectory.admission.eligible
+            ):
+                raise SkillCandidateSourceError(
+                    "SKILL_CANDIDATE_TRAJECTORY_NOT_ELIGIBLE"
+                )
+            trajectories.append(trajectory)
+
+        digest = trajectory_source_digest(
+            proposal.tenant_id, proposal.source_trajectory_ids
+        )
+        normalized_name = self._normalize_name(proposal.name)
+        description = normalize_safe_summary(
+            proposal.description, field="description"
+        )
+        trigger = self._normalize_safe_structure(proposal.trigger, "trigger")
+        success_contract = self._normalize_safe_structure(
+            proposal.success_contract, "success_contract"
+        )
+        procedure_steps = tuple(
+            normalize_safe_summary(item, field="procedure")
+            for item in proposal.procedure
+        )
+        failure_recovery = tuple(
+            normalize_safe_summary(item, field="failure_recovery")
+            for item in proposal.failure_recovery
+        )
+        evidence_requirements = tuple(
+            normalize_safe_summary(item, field="evidence_requirements")
+            for item in proposal.evidence_requirements
+        )
+        skill_id_digest = hashlib.sha256(
+            f"{proposal.tenant_id}:{normalized_name}".encode("utf-8")
+        ).hexdigest()[:24]
+        skill_id = f"candidate-skill-{skill_id_digest}"
+        evidence_ids = tuple(
+            dict.fromkeys(
+                str(item["evidence_id"])
+                for trajectory in trajectories
+                for item in trajectory.evidence
+            )
+        )
+        manifest: dict[str, object] = {
+            "schema_version": SKILL_CANDIDATE_SCHEMA_VERSION,
+            "skill_id": skill_id,
+            "version": proposal.version,
+            "name": normalized_name,
+            "description": description,
+            "trigger": trigger,
+            "allowed_tools": list(proposal.allowed_tools),
+            "failure_recovery": list(failure_recovery),
+            "success_contract": success_contract,
+            "evidence_requirements": list(evidence_requirements),
+            "token_budget_hint": proposal.token_budget_hint,
+            "source_trajectory_ids": list(proposal.source_trajectory_ids),
+            "evaluation_status": "not_evaluated",
+            "risk_level": proposal.risk_level,
+            "candidate_only": True,
+            "creates_tool": False,
+            "readonly": True,
+            "activation_allowed": False,
+        }
+        procedure: dict[str, object] = {
+            "steps": list(procedure_steps),
+            "execution_mode": "readonly_recommendation_only",
+        }
+        source_summary: dict[str, object] = {
+            "source_type": "eligible_runtime_trajectories",
+            "trajectory_ids": list(proposal.source_trajectory_ids),
+            "source_task_ids": [item.source_task_id for item in trajectories],
+            "quality_scores": [
+                item.admission.quality_score for item in trajectories
+            ],
+            "raw_artifacts_included": False,
+            "hidden_reasoning_included": False,
+        }
+        return await self._repository.create_or_get(
+            candidate_id=f"skill-candidate-{digest[:32]}",
+            tenant_id=proposal.tenant_id,
+            name=normalized_name,
+            workflow_type="repository_diagnosis",
+            environment_type="repository",
+            capabilities=("repository.read",),
+            manifest=manifest,
+            procedure=procedure,
+            source_outcome_id=f"trajectory:{proposal.source_trajectory_ids[0]}",
+            source_feedback_id="trajectory-admission",
+            evidence_ids=evidence_ids,
+            source_digest=digest,
+            source_summary=source_summary,
+            created_by=proposal.created_by.strip(),
+            skill_id=skill_id,
+            version=proposal.version,
+            description=description,
+            trigger=trigger,
+            allowed_tools=proposal.allowed_tools,
+            failure_recovery=failure_recovery,
+            success_contract=success_contract,
+            evidence_requirements=evidence_requirements,
+            token_budget_hint=proposal.token_budget_hint,
+            source_trajectory_ids=proposal.source_trajectory_ids,
+            evaluation_status="not_evaluated",
+            risk_level=proposal.risk_level,
+        )
+
     async def mark_replay_pending(
         self, tenant_id: str, candidate_id: str
     ) -> SkillCandidate | None:
         candidate = await self._repository.get(tenant_id, candidate_id)
         if candidate is None or candidate.status == REPLAY_PENDING_STATUS:
             return candidate
+        if (
+            candidate.source_trajectory_ids
+            and candidate.evaluation_status != "validation_passed"
+        ):
+            raise SkillCandidateLifecycleError("SKILL_CANDIDATE_VALIDATION_REQUIRED")
         try:
             return await self._repository.mark_replay_pending(tenant_id, candidate_id)
         except SkillCandidateLifecycleError:
@@ -93,6 +231,22 @@ class SkillCandidateService:
             if current is not None and current.status == REPLAY_PENDING_STATUS:
                 return current
             raise
+
+    async def validate_candidate(
+        self, tenant_id: str, candidate_id: str
+    ) -> CandidateValidationReport | None:
+        """Run and persist static/security checks without loading the Candidate."""
+
+        candidate = await self._repository.get(tenant_id, candidate_id)
+        if candidate is None:
+            return None
+        report = await self._validator.validate(candidate, self._repository)
+        return await self._repository.record_validation(report)
+
+    async def get_validation(
+        self, tenant_id: str, report_id: str
+    ) -> CandidateValidationReport | None:
+        return await self._repository.get_validation(tenant_id, report_id)
 
     async def record_replay(
         self,
@@ -201,6 +355,62 @@ class SkillCandidateService:
             raise SkillCandidateSourceError("SKILL_CANDIDATE_WRITE_CAPABILITY_DENIED")
 
     @staticmethod
+    def _validate_trajectory_proposal(
+        proposal: TrajectorySkillCandidateProposal,
+    ) -> None:
+        if not isinstance(proposal, TrajectorySkillCandidateProposal):
+            raise TypeError("proposal must be a TrajectorySkillCandidateProposal")
+        for value in (
+            proposal.tenant_id,
+            proposal.name,
+            proposal.description,
+            proposal.created_by,
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise SkillCandidateSourceError(
+                    "SKILL_CANDIDATE_PROPOSAL_FIELD_REQUIRED"
+                )
+        if not proposal.source_trajectory_ids:
+            raise SkillCandidateSourceError(
+                "SKILL_CANDIDATE_TRAJECTORY_REQUIRED"
+            )
+        if len(set(proposal.source_trajectory_ids)) != len(
+            proposal.source_trajectory_ids
+        ):
+            raise SkillCandidateSourceError(
+                "SKILL_CANDIDATE_DUPLICATE_TRAJECTORY"
+            )
+        if not proposal.trigger or not proposal.procedure:
+            raise SkillCandidateSourceError(
+                "SKILL_CANDIDATE_PROCEDURE_AND_TRIGGER_REQUIRED"
+            )
+        if not proposal.failure_recovery or not proposal.success_contract:
+            raise SkillCandidateSourceError(
+                "SKILL_CANDIDATE_CONTRACT_REQUIRED"
+            )
+        if not proposal.evidence_requirements:
+            raise SkillCandidateSourceError("SKILL_CANDIDATE_EVIDENCE_REQUIRED")
+        if proposal.version < 1:
+            raise SkillCandidateSourceError("SKILL_CANDIDATE_VERSION_INVALID")
+        if not 1 <= proposal.token_budget_hint <= 120_000:
+            raise SkillCandidateSourceError(
+                "SKILL_CANDIDATE_TOKEN_BUDGET_INVALID"
+            )
+        if proposal.risk_level != "S1":
+            raise SkillCandidateSourceError("SKILL_CANDIDATE_RISK_LEVEL_DENIED")
+        readonly_tools = {
+            item.name
+            for item in ReadOnlyToolCatalog().declarations
+            if item.readonly
+        }
+        if not proposal.allowed_tools or not set(proposal.allowed_tools).issubset(
+            readonly_tools
+        ):
+            raise SkillCandidateSourceError(
+                "SKILL_CANDIDATE_TOOL_NOT_READONLY_ALLOWLISTED"
+            )
+
+    @staticmethod
     def _validate_source(
         proposal: SkillCandidateProposal,
         source: VerifiedLearningSource | None,
@@ -283,6 +493,26 @@ class SkillCandidateService:
         return normalized
 
     @staticmethod
+    def _normalize_safe_structure(value: object, field: str) -> object:
+        if isinstance(value, str):
+            return normalize_safe_summary(value, field=field)
+        if isinstance(value, dict):
+            return {
+                str(key): SkillCandidateService._normalize_safe_structure(
+                    item, field
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [
+                SkillCandidateService._normalize_safe_structure(item, field)
+                for item in value
+            ]
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        raise SkillCandidateSourceError("SKILL_CANDIDATE_SCHEMA_VALUE_INVALID")
+
+    @staticmethod
     def _normalize_report_id(report_id: str) -> str:
         if not isinstance(report_id, str) or not report_id.strip():
             raise ValueError("report_id must be non-empty")
@@ -315,4 +545,5 @@ class SkillCandidateService:
 __all__ = [
     "SkillCandidateProposal",
     "SkillCandidateService",
+    "TrajectorySkillCandidateProposal",
 ]

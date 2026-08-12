@@ -511,3 +511,109 @@ class SkillVersionModel(Base):
     decided_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class LearningTrajectoryModel(Base):
+    """Redacted Runtime trajectory fact; never stores raw Artifacts or prompts."""
+
+    __tablename__ = "learning_trajectories"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "source_task_id", name="uq_learning_trajectory_task"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(120), index=True)
+    source_task_id: Mapped[str] = mapped_column(String(96), index=True)
+    schema_version: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), index=True)
+    task_summary: Mapped[str] = mapped_column(Text)
+    outcome_summary_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    tool_calls_json: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
+    evidence_json: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
+    usage_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    budget_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    admission_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    quality_score: Mapped[float] = mapped_column(Float)
+    rejection_reasons_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    redaction_count: Mapped[int] = mapped_column(Integer, default=0)
+    contains_raw_artifacts: Mapped[bool] = mapped_column(Boolean, default=False)
+    contains_hidden_reasoning: Mapped[bool] = mapped_column(Boolean, default=False)
+    admitted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), onupdate=func.now()
+    )
+
+
+class LearningTrajectoryEventModel(Base):
+    """Append-only audit event for trajectory admission state changes."""
+
+    __tablename__ = "learning_trajectory_events"
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(120), index=True)
+    trajectory_id: Mapped[str] = mapped_column(String(96), index=True)
+    kind: Mapped[str] = mapped_column(String(80), index=True)
+    from_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    to_status: Mapped[str] = mapped_column(String(24))
+    details_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now()
+    )
+
+
+class SkillCandidateValidationReportModel(Base):
+    """Immutable deterministic validation result for one Candidate digest."""
+
+    __tablename__ = "skill_candidate_validation_reports"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "candidate_id",
+            "candidate_digest",
+            "validator_version",
+            name="uq_skill_candidate_validation_digest",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(120), index=True)
+    candidate_id: Mapped[str] = mapped_column(String(96), index=True)
+    candidate_digest: Mapped[str] = mapped_column(String(128))
+    validator_version: Mapped[str] = mapped_column(String(64))
+    schema_valid: Mapped[bool] = mapped_column(Boolean)
+    security_valid: Mapped[bool] = mapped_column(Boolean)
+    passed: Mapped[bool] = mapped_column(Boolean, index=True)
+    checks_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    violations_json: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
+    validated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now()
+    )
+
+
+class SkillBaselineRunModel(Base):
+    """Observed fixed-case Baseline results; never stores Candidate output."""
+
+    __tablename__ = "skill_baseline_runs"
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(120), index=True)
+    schema_version: Mapped[str] = mapped_column(String(64))
+    case_definition_digest: Mapped[str] = mapped_column(String(128), index=True)
+    runner: Mapped[str] = mapped_column(String(96))
+    candidate_loaded: Mapped[bool] = mapped_column(Boolean, default=False)
+    case_count: Mapped[int] = mapped_column(Integer)
+    oracle_pass_count: Mapped[int] = mapped_column(Integer)
+    results_json: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now()
+    )

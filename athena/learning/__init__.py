@@ -20,9 +20,17 @@ from athena.learning.skill_candidate import (
     SkillCandidateLifecycleError,
     SkillCandidateProposal,
     SkillCandidateSourceError,
+    TrajectorySkillCandidateProposal,
     VerifiedEvidenceSummary,
     VerifiedLearningSource,
     VerifiedLearningSourceResolver,
+)
+from athena.learning.skill_validation import (
+    CandidateValidationCategory,
+    CandidateValidationReport,
+    CandidateValidationViolation,
+    SKILL_CANDIDATE_SCHEMA_VERSION,
+    SKILL_CANDIDATE_VALIDATOR_VERSION,
 )
 from athena.learning.tracer import EventBus, TraceEvent, TraceObserver, Tracer
 
@@ -31,6 +39,9 @@ __all__ = [
     "ComplexityScore",
     "ComplexityWeights",
     "CANDIDATE_STATUS",
+    "CandidateValidationCategory",
+    "CandidateValidationReport",
+    "CandidateValidationViolation",
     "CuratorDaemon",
     "EventBus",
     "SkillGenerationResult",
@@ -41,8 +52,11 @@ __all__ = [
     "SkillCandidateLifecycleError",
     "SkillCandidateProposal",
     "SkillCandidateSourceError",
+    "TrajectorySkillCandidateProposal",
     "SkillValidationResult",
     "SkillValidator",
+    "SKILL_CANDIDATE_SCHEMA_VERSION",
+    "SKILL_CANDIDATE_VALIDATOR_VERSION",
     "REJECTED_STATUS",
     "REPLAY_PENDING_STATUS",
     "REVIEW_PENDING_STATUS",

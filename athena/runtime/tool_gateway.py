@@ -26,7 +26,7 @@ from athena.types import JSONValue
 from .models import Decision, DecisionKind
 
 _MAX_TOOL_SCHEMAS = 3
-_SERVER_CONTROLLED_ARGUMENTS = frozenset(
+SERVER_CONTROLLED_ARGUMENTS = frozenset(
     {
         "call_id",
         "environment_id",
@@ -149,7 +149,7 @@ class RuntimeToolGateway:
         if decision.tool_name not in selected:
             return self._rejected("TOOL_NOT_SELECTED")
 
-        protected_arguments = _SERVER_CONTROLLED_ARGUMENTS | set(
+        protected_arguments = SERVER_CONTROLLED_ARGUMENTS | set(
             context.injected_arguments
         )
         if set(decision.arguments) & protected_arguments:

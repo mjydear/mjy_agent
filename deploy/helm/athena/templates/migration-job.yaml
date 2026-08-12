@@ -1,0 +1,28 @@
+{{- if .Values.migration.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: athena-migrate
+  labels:
+    {{- include "athena.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migration
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: athena
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: athena
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - secretRef:
+                name: {{ .Values.secretRefs.existingSecret }}
+          env:
+            - name: ATHENA_DATABASE_URL
+              value: {{ .Values.config.databaseUrl | quote }}
+{{- end }}

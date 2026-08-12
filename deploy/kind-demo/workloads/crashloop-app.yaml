@@ -1,0 +1,35 @@
+# 异常样例 1：CrashLoopBackOff
+#
+# 现象：容器启动后立即以非 0 退出码结束，被 kubelet 反复重启，最终进入 CrashLoopBackOff。
+# 对应 Athena Playbook：CrashLoopBackOff（读取容器状态 / restart count / 日志 / 事件）。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crashloop-app
+  labels:
+    app: crashloop-app
+    demo: athena
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crashloop-app
+  template:
+    metadata:
+      labels:
+        app: crashloop-app
+    spec:
+      containers:
+        - name: crashloop
+          image: busybox:1.36
+          # 打印一行日志后立即以退出码 1 结束，制造 CrashLoopBackOff
+          command: ["/bin/sh", "-c"]
+          args:
+            - "echo 'starting demo app'; echo 'ERROR: failed to connect to database' >&2; exit 1"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"

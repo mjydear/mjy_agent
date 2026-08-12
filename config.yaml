@@ -1,0 +1,124 @@
+runtime:
+  # demo 允许显式 Mock/内存降级；production 由 /readyz 执行严格配置与后端门禁
+  profile: demo
+llm:
+  # Credentials do not enable network calls by themselves. Set
+  # ATHENA_LLM_ENABLED=true for an explicit live runtime deployment.
+  enabled: false
+  provider: litellm
+  model: deepseek/deepseek-chat
+  temperature: 0.2
+  max_tokens: 1024
+  routing:
+    # 多模型复杂度路由：开启需同时配置 light/heavy 模型的凭证
+    enabled: false
+    light_model: deepseek/deepseek-chat
+    heavy_model: deepseek/deepseek-chat
+    threshold: 0.5
+memory:
+  working_max_tokens: 8000
+  vector_top_k: 5
+embedding:
+  # 真实嵌入模型：开启需配置对应厂商 API Key，缺失时自动降级哈希嵌入
+  enabled: false
+  model: text-embedding-3-small
+  dimension: 1536
+vector_store:
+  # 向量库后端：memory | milvus；milvus 连不上时自动降级 memory
+  backend: memory
+  uri: http://localhost:19530
+  collection_name: athena_memory
+  dimension: 1536
+  metric_type: COSINE
+agent:
+  max_steps: 6
+  execution_mode: legacy_react
+logging:
+  level: INFO
+web:
+  host: 127.0.0.1
+  port: 8000
+  cors_origins:
+    - "*"
+  session_ttl_seconds: 3600
+security:
+  # api_keys 为空 = 鉴权关闭（本地演示）；上线时通过环境变量 ATHENA_API_KEYS=key:tenant 注入
+  api_keys: {}
+  require_auth: false
+  default_tenant: public
+cache:
+  # redis_url 为空或连接失败会自动降级为内存缓存；生产用 ATHENA_REDIS_URL 注入
+  redis_url: redis://127.0.0.1:6379/0
+  namespace: athena
+  vector_ttl_seconds: 300
+  idempotency_ttl_seconds: 86400
+database:
+  # Durable task facts. Compose injects a PostgreSQL URL; demo may keep this null.
+  url: null
+  echo: false
+  # Local development only. Production uses an explicit Alembic migration Job.
+  auto_migrate: false
+  pool_size: 8
+  max_overflow: 8
+queue:
+  enabled: true
+  stream_name: athena:ops:tasks
+  consumer_group: athena-workers
+  block_ms: 1000
+  reclaim_idle_seconds: 30
+  max_attempts: 5
+evidence:
+  # Metadata is stored in PostgreSQL; bodies are content-addressed below this root.
+  backend: local
+  local_root: data/evidence
+  max_content_bytes: 524288
+worker:
+  lease_ttl_seconds: 30
+  poll_interval_seconds: 0.2
+  batch_size: 16
+task:
+  max_concurrency: 8
+  result_ttl_seconds: 3600
+  thread_pool_workers: 8
+rate_limit:
+  enabled: true
+  global_per_minute: 600
+  per_tenant_per_minute: 120
+  per_route_per_minute: 90
+  burst_multiplier: 1.0
+sandbox:
+  cpu_time_seconds: 5
+  memory_mb: 256
+  timeout_seconds: 5.0
+observability:
+  # tracing_enabled=true 时启用 OpenTelemetry；otlp_endpoint 为空则用 Console 导出器
+  tracing_enabled: false
+  otlp_endpoint: null
+  service_name: athena-agent
+  metrics_enabled: true
+ops:
+  # 云运维 K8s 诊断：mock=始终用演示数据；real=优先真实集群，缺 kubeconfig/连接失败自动降级 mock
+  mode: mock
+  kubernetes:
+    # kubeconfig 为 null 时用 SDK 默认查找（集群内配置或 ~/.kube/config）；生产用 ATHENA_OPS_K8S_KUBECONFIG 注入
+    kubeconfig: null
+    context: null
+    # namespace_allowlist 为空 = 不限制（本地演示）；生产显式收窄，如 [default, prod]
+    namespace_allowlist: []
+    timeout: 10.0
+    fallback_policy: allow_mock
+  prometheus:
+    # 默认关闭，避免本地无 Prometheus 时影响 K8s 诊断；演示可设 enabled=true + mock://prometheus
+    enabled: false
+    base_url: mock://prometheus
+    timeout_seconds: 5.0
+    fallback_policy: allow_mock
+  security:
+    # 默认只读；写操作只允许少量低风险 Deployment 动作，并且必须人工确认
+    default_readonly: true
+    allowed_resource_kinds: [Deployment]
+    allowed_verbs: [rollout_restart, scale, pause, resume]
+    blocked_actions: [delete namespace, delete pvc, patch secret, rbac, batch delete]
+    environments: [dev, staging, prod]
+    # prod 默认禁止写操作；生产若确需启用，用 ATHENA_OPS_PROD_WRITE_ENABLED=true 显式开启
+    prod_write_enabled: false

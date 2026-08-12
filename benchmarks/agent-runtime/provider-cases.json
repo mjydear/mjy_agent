@@ -1,0 +1,43 @@
+[
+  {
+    "case_id": "pricing-diagnosis",
+    "goal": "Use the supplied evidence to diagnose the pricing regression and return an evidence-backed recommendation.",
+    "history": [
+      "The operator reported a failing pricing test.",
+      "The first search found the discounted_price_cents implementation.",
+      "The test output contains a long unrelated diagnostic trace.",
+      "The final answer must cite the relevant evidence ids."
+    ],
+    "summary": [
+      "The pricing implementation subtracts a percentage directly from cents.",
+      "The failing assertion expects a percentage calculation.",
+      "The long test output is stored as an Artifact and is not decision-critical."
+    ],
+    "evidence": [
+      {"evidence_id": "pricing-source", "artifact_id": "artifact-pricing-source", "summary": "pricing.py subtracts discount_percent directly from cents."},
+      {"evidence_id": "pricing-test", "artifact_id": "artifact-pricing-test", "summary": "The assertion expects 10,000 cents with 20 percent discount to become 8,000 cents."}
+    ],
+    "expected_evidence_ids": ["pricing-source", "pricing-test"],
+    "artifact_lines": 300
+  },
+  {
+    "case_id": "timeout-diagnosis",
+    "goal": "Identify the most likely timeout cause from the evidence and provide a safe next investigation step.",
+    "history": [
+      "The request timed out after the configured deadline.",
+      "A retry was attempted without changing the query.",
+      "The operator requires a read-only recommendation."
+    ],
+    "summary": [
+      "The query scans an unbounded time range.",
+      "The client timeout is shorter than the observed server work.",
+      "A bounded query is the next safe investigation step."
+    ],
+    "evidence": [
+      {"evidence_id": "timeout-query", "artifact_id": "artifact-timeout-query", "summary": "The query has no time-range bound."},
+      {"evidence_id": "timeout-client", "artifact_id": "artifact-timeout-client", "summary": "The client deadline is 5 seconds."}
+    ],
+    "expected_evidence_ids": ["timeout-query", "timeout-client"],
+    "artifact_lines": 180
+  }
+]

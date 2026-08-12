@@ -1,0 +1,20 @@
+{
+  "_metadata": {
+    "provider": "DeepSeek API",
+    "source": "https://api-docs.deepseek.com/quick_start/pricing",
+    "retrieved_at": "2026-08-11",
+    "currency": "USD",
+    "unit": "per_1M_tokens",
+    "input_per_million_is_cache_miss": true
+  },
+  "deepseek/deepseek-v4-flash": {
+    "input_per_million": 0.14,
+    "output_per_million": 0.28,
+    "cached_input_per_million": 0.0028
+  },
+  "deepseek/deepseek-v4-pro": {
+    "input_per_million": 0.435,
+    "output_per_million": 0.87,
+    "cached_input_per_million": 0.003625
+  }
+}

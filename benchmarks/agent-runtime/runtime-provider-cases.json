@@ -1,0 +1,28 @@
+[
+  {
+    "case_id": "pricing-diagnosis",
+    "goal": "Diagnose the pricing.py failure. Required sequence: call read_file_range with relative_path pricing.py, then call run_test with relative_path check_pricing.py. Do not call search_code or repeat a successful tool. After both Evidence cards exist, return a read-only final recommendation. A failing check is diagnostic evidence; do not fail the Agent because the check fails.",
+    "repository_root": "tests/fixtures/runtime_repo",
+    "tool_sequence": ["read_file_range", "run_test"],
+    "tool_arguments": [
+      {"relative_path": "pricing.py", "start_line": 1, "end_line": 80},
+      {"relative_path": "check_pricing.py"}
+    ],
+    "expected_tool_names": ["read_file_range", "run_test"],
+    "profile": "standard",
+    "max_ticks": 6
+  },
+  {
+    "case_id": "context-pressure-diagnosis",
+    "goal": "Diagnose the context pressure test. Required sequence: call read_file_range with relative_path check_context_pressure.py, then call run_test with relative_path check_context_pressure.py. Do not call search_code or repeat a successful tool. After both Evidence cards exist, return a read-only final recommendation. A failing check is diagnostic evidence; do not fail the Agent because the check fails.",
+    "repository_root": "tests/fixtures/runtime_repo",
+    "tool_sequence": ["read_file_range", "run_test"],
+    "tool_arguments": [
+      {"relative_path": "check_context_pressure.py", "start_line": 1, "end_line": 120},
+      {"relative_path": "check_context_pressure.py"}
+    ],
+    "expected_tool_names": ["read_file_range", "run_test"],
+    "profile": "standard",
+    "max_ticks": 6
+  }
+]

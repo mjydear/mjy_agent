@@ -1,0 +1,81 @@
+# Python bytecode, virtual environments, and package build output
+__pycache__/
+*.py[cod]
+*.pyd
+*.egg-info/
+.venv/
+venv/
+env/
+build/
+dist/
+pip-wheel-metadata/
+
+# Test, type-checking, linting, and coverage output
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+junit.xml
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+config.local.yaml
+config.local.yml
+config.*.local.yaml
+config.*.local.yml
+*.secret
+*.secret.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.kubeconfig
+kubeconfig
+kubeconfig.*
+.kube/
+
+# Runtime state and generated artifacts
+data/
+artifacts/
+reports/
+logs/
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+.tmp/
+tmp/
+archive/
+
+# Local agent tooling. Keep skills-lock.json tracked for reproducibility.
+/.agents/
+
+# Development-only project notes and task state
+/docs/internal/
+
+# Editor, OS, and temporary files
+.idea/
+.vscode/
+.fleet/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.bak
+*~
+
+# Frontend dependency caches
+node_modules/
+.npm/
+.yarn/
+.pnpm-store/
+
+# .env.example is intentionally committed as a configuration template.

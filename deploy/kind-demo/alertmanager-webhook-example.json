@@ -1,0 +1,31 @@
+{
+  "receiver": "athena-webhook",
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "KubePodCrashLooping",
+        "severity": "critical",
+        "namespace": "athena-demo",
+        "pod": "crashloop-app-xxxxx",
+        "deployment": "crashloop-app"
+      },
+      "annotations": {
+        "summary": "Pod crashloop-app 正在 CrashLoopBackOff",
+        "description": "命名空间 athena-demo 下的 crashloop-app 在 5 分钟内重启超过 5 次。"
+      },
+      "startsAt": "2026-07-08T10:00:00Z",
+      "generatorURL": "http://localhost:30090/graph"
+    }
+  ],
+  "groupLabels": {
+    "alertname": "KubePodCrashLooping"
+  },
+  "commonLabels": {
+    "alertname": "KubePodCrashLooping",
+    "severity": "critical",
+    "namespace": "athena-demo"
+  },
+  "externalURL": "http://localhost:30093"
+}

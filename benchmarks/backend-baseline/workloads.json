@@ -1,0 +1,30 @@
+{
+  "suite_id": "backend-baseline-20260719",
+  "measurement_policy": "Reproducible workload definitions only; no unmeasured performance claim is made here.",
+  "workloads": [
+    {
+      "id": "submit",
+      "description": "Alert/OpsTask command submission, idempotency key and stable error contract checks.",
+      "command": "python -m pytest tests/test_ops_contracts.py tests/test_durable_alert_api.py -q",
+      "required_dimensions": ["tenant_id", "idempotency_key", "traceparent"]
+    },
+    {
+      "id": "queue",
+      "description": "Outbox, Redis Stream adapter contract, ACK-after-commit and DLQ semantics.",
+      "command": "python -m pytest tests/test_durable_worker.py tests/test_trace_context_linkage.py -q",
+      "required_dimensions": ["task_id", "tenant_id", "traceparent", "message_id"]
+    },
+    {
+      "id": "stub-agent",
+      "description": "Policy workflow and rules-only termination without raw prompt/thought persistence.",
+      "command": "python -m pytest tests/test_policy_workflow.py tests/test_decision_trace.py -q",
+      "required_dimensions": ["task_id", "run_id", "reason_code", "evidence_refs"]
+    },
+    {
+      "id": "real-tool",
+      "description": "ToolRuntime safety, idempotent effect repository and readonly cloud tool contract.",
+      "command": "python -m pytest tests/test_tool_runtime.py tests/test_tool_effect_repository.py tests/test_k8s_readonly_client.py -q",
+      "required_dimensions": ["call_id", "plan_hash", "risk_level", "post_condition"]
+    }
+  ]
+}

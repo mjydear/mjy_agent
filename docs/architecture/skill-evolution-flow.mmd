@@ -1,0 +1,6 @@
+flowchart LR
+    Trace[Execution Trace] --> Complexity[Complexity Evaluator]
+    Complexity --> Generator[Skill Generator]
+    Generator --> Validator[Skill Validator]
+    Validator -->|score >= 0.8| Library[Skill Library]
+    Validator -->|below threshold| Reject[Reject and Review]

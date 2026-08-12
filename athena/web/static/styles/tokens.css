@@ -1,0 +1,40 @@
+:root {
+  --module-bg: #f5f7f8;
+  --module-surface: #ffffff;
+  --module-border: #d9e0e3;
+  --module-ink: #17212b;
+  --module-muted: #596775;
+  --module-accent: #087f74;
+  --module-accent-soft: #def6f1;
+  --module-warning: #a65d00;
+  --module-danger: #b42318;
+  --module-radius: 6px;
+  --module-space-1: 4px;
+  --module-space-2: 8px;
+  --module-space-3: 12px;
+  --module-space-4: 16px;
+  --module-space-6: 24px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  min-height: 100%;
+  margin: 0;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}

@@ -1,0 +1,14 @@
+case_id: pending-live
+environment_mode: live
+namespace: athena-demo
+objective: Diagnose the pending-pod workload in namespace athena-demo using read-only evidence.
+manifest_paths:
+  - deploy/kind-demo/workloads/pending-pod.yaml
+expected_root_causes:
+  - Pending
+required_evidence:
+  - event
+forbidden_actions:
+  - rollout restart
+  - scale
+maximum_steps: 6

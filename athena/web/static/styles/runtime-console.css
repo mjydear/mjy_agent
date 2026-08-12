@@ -1,0 +1,224 @@
+.runtime-console {
+  min-height: 100%;
+  background: #f3f5f5;
+  color: #17212b;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.runtime-console *,
+.runtime-console *::before,
+.runtime-console *::after { box-sizing: border-box; }
+
+.runtime-console__grid {
+  display: grid;
+  grid-template-columns: minmax(224px, 0.78fr) minmax(420px, 1.8fr) minmax(266px, 0.92fr);
+  min-height: min(760px, calc(100vh - 154px));
+  border: 1px solid #cfd8d8;
+  background: #ffffff;
+}
+
+.runtime-console__sidebar,
+.runtime-console__workspace,
+.runtime-console__inspector { min-width: 0; }
+
+.runtime-console__sidebar {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #dce3e2;
+  background: #f9fbfa;
+}
+
+.runtime-console__sidebar-heading,
+.runtime-console__workspace-header,
+.runtime-console__section-heading,
+.runtime-console__timeline-title,
+.runtime-console__workspace-actions,
+.runtime-console__inspector-controls,
+.runtime-console__task-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.runtime-console__sidebar-heading { padding: 16px; border-bottom: 1px solid #dce3e2; }
+.runtime-console__eyebrow { margin: 0; color: #087f74; font-size: 11px; font-weight: 800; letter-spacing: 0; }
+.runtime-console h1,
+.runtime-console h2,
+.runtime-console p { margin-top: 0; }
+.runtime-console__sidebar h1 { margin-bottom: 0; font-size: 18px; line-height: 1.25; }
+
+.runtime-console__navigation {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-bottom: 1px solid #dce3e2;
+  color: #687878;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.runtime-console__navigation span { padding: 10px 8px; text-align: center; }
+.runtime-console__navigation .is-active { border-bottom: 2px solid #087f74; color: #075e56; }
+.runtime-console__navigation .is-muted { color: #8a9797; }
+
+.runtime-console__sidebar-section { display: grid; min-height: 0; gap: 8px; padding: 14px 10px; }
+.runtime-console__section-heading { color: #5b6969; font-size: 12px; font-weight: 700; }
+.runtime-console__section-heading h2 { margin: 0; color: #263333; font-size: 13px; }
+.runtime-console__section-heading span { color: #758282; font-weight: 500; }
+
+.runtime-console__task-list { display: grid; max-height: 540px; gap: 4px; overflow: auto; padding-right: 2px; }
+.runtime-console__task {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  padding: 10px;
+  color: #263333;
+  text-align: left;
+  cursor: pointer;
+}
+
+.runtime-console__task:hover { background: #eaf2f0; }
+.runtime-console__task:focus-visible,
+.runtime-console__button:focus-visible,
+.runtime-console__tab:focus-visible,
+.runtime-console textarea:focus-visible,
+.runtime-console input:focus-visible,
+.runtime-console select:focus-visible { outline: 3px solid #7ad9cc; outline-offset: 2px; }
+.runtime-console__task.is-selected { border-color: #98d6ca; background: #def6f1; }
+.runtime-console__task-title { overflow: hidden; font-size: 13px; font-weight: 700; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-console__task-meta { color: #687878; font-size: 11px; }
+.runtime-console__muted { margin: 8px; color: #687878; font-size: 12px; line-height: 1.5; }
+
+.runtime-console__workspace { display: grid; align-content: start; min-height: 0; background: #ffffff; }
+.runtime-console__workspace-header { min-height: 92px; border-bottom: 1px solid #dce3e2; padding: 18px 20px; }
+.runtime-console__goal { min-width: 0; }
+.runtime-console__goal h2 { margin-bottom: 5px; font-size: 18px; line-height: 1.35; overflow-wrap: anywhere; }
+.runtime-console__task-id { margin-bottom: 0; color: #687878; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+.runtime-console__workspace-actions { flex-wrap: wrap; justify-content: flex-end; }
+
+.runtime-console__status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border: 1px solid #cfd8d8;
+  border-radius: 999px;
+  padding: 2px 8px;
+  color: #526060;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.runtime-console__status--success { border-color: #98d6ca; background: #def6f1; color: #075e56; }
+.runtime-console__status--progress { border-color: #ecd18e; background: #fff5dd; color: #986000; }
+.runtime-console__status--danger { border-color: #efb6b0; background: #fff0ef; color: #a12e24; }
+
+.runtime-console__button {
+  min-height: 32px;
+  border: 1px solid #c4cfce;
+  border-radius: 5px;
+  background: #ffffff;
+  padding: 6px 10px;
+  color: #243131;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.runtime-console__button:hover { background: #edf2f1; }
+.runtime-console__button--primary { border-color: #087f74; background: #087f74; color: #ffffff; }
+.runtime-console__button--primary:hover { background: #06685f; }
+.runtime-console__button--danger { border-color: #c84a3c; color: #a12e24; }
+.runtime-console__button--danger:hover { background: #fff0ef; }
+.runtime-console__button--quiet { border-color: transparent; background: transparent; color: #526060; }
+.runtime-console__button:disabled { cursor: not-allowed; opacity: 0.58; }
+
+.runtime-console__timeline-panel,
+.runtime-console__report { padding: 18px 20px; }
+.runtime-console__timeline-panel { min-height: 280px; }
+.runtime-console__timeline { display: grid; margin: 16px 0 0; padding: 0; list-style: none; }
+.runtime-console__timeline-entry { position: relative; display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 9px; padding-bottom: 16px; }
+.runtime-console__timeline-entry:not(:last-child)::before { position: absolute; top: 14px; bottom: -2px; left: 6px; width: 1px; background: #cfd8d8; content: ""; }
+.runtime-console__timeline-marker { z-index: 1; display: block; width: 13px; height: 13px; margin-top: 3px; border: 3px solid #ffffff; border-radius: 50%; background: #087f74; box-shadow: 0 0 0 1px #8fbeb8; }
+.runtime-console__timeline-copy { min-width: 0; }
+.runtime-console__timeline-title { align-items: baseline; }
+.runtime-console__timeline-title strong { color: #263333; font-size: 13px; overflow-wrap: anywhere; }
+.runtime-console__timeline-title time { color: #718080; font-size: 11px; white-space: nowrap; }
+.runtime-console__timeline-copy > p { margin: 4px 0 0; color: #586767; font-size: 12px; line-height: 1.5; }
+.runtime-console__event-data { margin-top: 6px; color: #536262; font-size: 11px; }
+.runtime-console__event-data summary { cursor: pointer; }
+.runtime-console__event-data pre,
+.runtime-console__code,
+.runtime-console__report-body { overflow: auto; border: 1px solid #dce3e2; background: #f8faf9; padding: 10px; color: #2d3b3b; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.runtime-console__event-data pre { margin: 6px 0 0; }
+.runtime-console__report { border-top: 1px solid #dce3e2; }
+.runtime-console__report-body { margin: 12px 0 0; }
+
+.runtime-console__inspector { border-left: 1px solid #dce3e2; background: #fbfcfc; }
+.runtime-console__tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid #dce3e2; }
+.runtime-console__tab { min-height: 46px; border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 8px 4px; color: #617070; font-size: 12px; font-weight: 700; cursor: pointer; }
+.runtime-console__tab:hover { background: #f0f4f3; }
+.runtime-console__tab.is-active { border-bottom-color: #087f74; color: #075e56; }
+.runtime-console__inspector-body { min-height: 280px; padding: 16px; }
+
+.runtime-console__empty,
+.runtime-console__error { border: 1px dashed #cfd8d8; padding: 18px; color: #617070; }
+.runtime-console__empty h2 { margin-bottom: 6px; color: #344242; font-size: 14px; }
+.runtime-console__empty p,
+.runtime-console__error p { margin-bottom: 0; font-size: 12px; line-height: 1.55; }
+.runtime-console__error { border-style: solid; border-color: #efb6b0; background: #fff7f6; color: #8f2b22; }
+.runtime-console__error .runtime-console__button { margin-top: 12px; }
+
+.runtime-console__facts { display: grid; gap: 0; margin: 0; }
+.runtime-console__facts > div { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid #e1e7e6; padding: 10px 0; }
+.runtime-console__facts dt { color: #667575; font-size: 12px; }
+.runtime-console__facts dd { margin: 0; color: #263333; font-size: 12px; font-weight: 700; text-align: right; overflow-wrap: anywhere; }
+.runtime-console__inspector-controls { flex-wrap: wrap; justify-content: flex-start; margin-top: 14px; }
+.runtime-console__human-input { display: grid; gap: 8px; margin-top: 16px; border-top: 1px solid #dce3e2; padding-top: 16px; color: #526060; font-size: 12px; font-weight: 700; }
+.runtime-console textarea,
+.runtime-console input,
+.runtime-console select { min-width: 0; border: 1px solid #c4cfce; border-radius: 5px; background: #ffffff; padding: 8px 9px; color: #243131; font-size: 13px; }
+.runtime-console textarea { min-height: 76px; resize: vertical; }
+.runtime-console__evidence-list,
+.runtime-console__usage-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.runtime-console__evidence-list li,
+.runtime-console__usage-list li { display: grid; gap: 5px; border-bottom: 1px solid #e1e7e6; padding: 10px 0; }
+.runtime-console__evidence-list strong,
+.runtime-console__usage-list strong { color: #263333; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.runtime-console__evidence-list span,
+.runtime-console__usage-list span,
+.runtime-console__usage-list small { color: #657474; font-size: 11px; overflow-wrap: anywhere; }
+.runtime-console__evidence-list code { color: #075e56; font-size: 11px; overflow-wrap: anywhere; }
+.runtime-console__usage-summary { display: flex; align-items: baseline; gap: 5px; border-bottom: 1px solid #dce3e2; padding-bottom: 14px; color: #687878; }
+.runtime-console__usage-summary strong { color: #075e56; font-size: 22px; }
+.runtime-console__usage-list { margin-top: 6px; }
+
+.runtime-console__composer { display: grid; grid-template-columns: minmax(220px, 1.5fr) minmax(180px, 0.8fr) minmax(104px, 0.32fr) auto; align-items: end; gap: 10px; border: 1px solid #cfd8d8; border-top: 0; background: #f9fbfa; padding: 12px; }
+.runtime-console__composer-field,
+.runtime-console__repository-field { display: grid; gap: 5px; color: #536262; font-size: 11px; font-weight: 800; }
+.runtime-console__composer textarea { min-height: 42px; max-height: 100px; }
+.runtime-console__composer .runtime-console__button { min-height: 38px; }
+
+@media (max-width: 1100px) {
+  .runtime-console__grid { grid-template-columns: minmax(210px, 0.75fr) minmax(0, 1.65fr); }
+  .runtime-console__inspector { grid-column: 1 / -1; border-top: 1px solid #dce3e2; border-left: 0; }
+  .runtime-console__inspector-body { min-height: 180px; }
+}
+
+@media (max-width: 760px) {
+  .runtime-console__grid { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  .runtime-console__sidebar,
+  .runtime-console__inspector { border: 0; border-bottom: 1px solid #dce3e2; }
+  .runtime-console__task-list { max-height: 220px; }
+  .runtime-console__workspace-header { align-items: flex-start; flex-direction: column; }
+  .runtime-console__workspace-actions { justify-content: flex-start; }
+  .runtime-console__composer { grid-template-columns: minmax(0, 1fr); border-top: 1px solid #cfd8d8; }
+  .runtime-console__composer .runtime-console__button { width: 100%; }
+  .runtime-console__timeline-panel,
+  .runtime-console__report { padding: 16px; }
+  .runtime-console__timeline-title { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .runtime-console__tab { font-size: 11px; }
+}

@@ -1,0 +1,98 @@
+# 一键本地部署：Athena 应用 + Redis 缓存。
+# 用法：docker compose up --build
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: athena
+      POSTGRES_USER: athena
+      POSTGRES_PASSWORD: athena-local-only
+    ports:
+      - "5432:5432"
+    volumes:
+      - athena-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U athena -d athena"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ATHENA_DATABASE_URL: postgresql+asyncpg://athena:athena-local-only@postgres:5432/athena
+    restart: "no"
+
+  athena-api:
+    build: .
+    command: ["uvicorn", "athena.api.asgi:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      ATHENA_WEB_HOST: 0.0.0.0
+      ATHENA_WEB_PORT: "8000"
+      ATHENA_REDIS_URL: redis://redis:6379/0
+      ATHENA_DATABASE_URL: postgresql+asyncpg://athena:athena-local-only@postgres:5432/athena
+      ATHENA_SECRET_MASTER_KEY: ${ATHENA_SECRET_MASTER_KEY:-local-dev-secret-master-key}
+      ATHENA_ALERT_INTEGRATION_TOKENS: ${ATHENA_ALERT_INTEGRATION_TOKENS:-local-alert-token:public}
+      # 上线时通过 .env 注入真实密钥，切勿写死在仓库里
+      # ATHENA_API_KEYS: "prod-key:tenant-a"
+      # OPENAI_API_KEY / DEEPSEEK_API_KEY: ...
+    ports:
+      - "8000:8000"
+    volumes:
+      - athena-evidence:/app/data/evidence
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  athena-worker:
+    build: .
+    command: ["python", "-m", "athena.cli.main", "worker"]
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      ATHENA_REDIS_URL: redis://redis:6379/0
+      ATHENA_DATABASE_URL: postgresql+asyncpg://athena:athena-local-only@postgres:5432/athena
+      ATHENA_SECRET_MASTER_KEY: ${ATHENA_SECRET_MASTER_KEY:-local-dev-secret-master-key}
+      ATHENA_ALERT_INTEGRATION_TOKENS: ${ATHENA_ALERT_INTEGRATION_TOKENS:-local-alert-token:public}
+      ATHENA_WEB_HOST: 0.0.0.0
+      ATHENA_WEB_PORT: "8000"
+      ATHENA_EVIDENCE_LOCAL_ROOT: /app/data/evidence
+    volumes:
+      - athena-evidence:/app/data/evidence
+
+volumes:
+  athena-postgres:
+  athena-evidence:

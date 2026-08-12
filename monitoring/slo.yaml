@@ -1,0 +1,92 @@
+# Athena Agent SLO 定义与多窗口燃尽率告警
+# 加载方式：在 prometheus.yml 的 rule_files 中追加本文件。
+# SLO 目标：
+#   - 可用性 SLO：99.5%（30天错误预算 = 0.5%）
+#   - 延迟 SLO：99% 请求 P99 < 500ms
+# 说明：燃尽率(burn rate)多窗口告警是 Google SRE 推荐做法，
+#   同时看短窗口(快速烧预算)和长窗口(持续烧预算)，兼顾灵敏与抗抖动。
+groups:
+  - name: athena-slo-recording
+    interval: 30s
+    rules:
+      # 错误率（5xx 占比）——各时间窗口预聚合，供燃尽率告警复用
+      - record: athena:request_error_ratio:rate5m
+        expr: |
+          sum(rate(athena_http_errors_total{status=~"5.."}[5m]))
+            / clamp_min(sum(rate(athena_http_requests_total[5m])), 1)
+      - record: athena:request_error_ratio:rate30m
+        expr: |
+          sum(rate(athena_http_errors_total{status=~"5.."}[30m]))
+            / clamp_min(sum(rate(athena_http_requests_total[30m])), 1)
+      - record: athena:request_error_ratio:rate1h
+        expr: |
+          sum(rate(athena_http_errors_total{status=~"5.."}[1h]))
+            / clamp_min(sum(rate(athena_http_requests_total[1h])), 1)
+      - record: athena:request_error_ratio:rate6h
+        expr: |
+          sum(rate(athena_http_errors_total{status=~"5.."}[6h]))
+            / clamp_min(sum(rate(athena_http_requests_total[6h])), 1)
+      # 延迟达标率：P99 是否 < 500ms（记录当前 P99 供 Dashboard/告警使用）
+      - record: athena:request_latency_p99:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(athena_http_request_duration_seconds_bucket[5m])) by (le))
+
+  - name: athena-slo-burnrate
+    rules:
+      # 可用性 SLO=99.5% → 错误预算=0.5%。以下阈值为“预算消耗倍率”。
+      # 快烧：1h 窗口 14.4x 且 5m 窗口 14.4x（约 2 天烧完 → 触发 critical）
+      - alert: AthenaErrorBudgetFastBurn
+        expr: |
+          athena:request_error_ratio:rate1h > (14.4 * 0.005)
+          and athena:request_error_ratio:rate5m > (14.4 * 0.005)
+        for: 2m
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: "可用性错误预算快速燃尽"
+          description: "1h 与 5m 错误率均超过 14.4x 预算烧率，剩余预算将在 ~2 天内耗尽"
+      # 慢烧：6h 窗口 6x 且 30m 窗口 6x（约 5 天烧完 → 触发 warning）
+      - alert: AthenaErrorBudgetSlowBurn
+        expr: |
+          athena:request_error_ratio:rate6h > (6 * 0.005)
+          and athena:request_error_ratio:rate30m > (6 * 0.005)
+        for: 15m
+        labels:
+          severity: warning
+          slo: availability
+        annotations:
+          summary: "可用性错误预算持续燃尽"
+          description: "6h 与 30m 错误率均超过 6x 预算烧率，需尽快介入"
+      # 延迟 SLO 破线：P99 持续超过 500ms
+      - alert: AthenaLatencySLOBreach
+        expr: athena:request_latency_p99:5m > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          slo: latency
+        annotations:
+          summary: "延迟 SLO 破线"
+          description: "P99 延迟 {{ $value }}s 超过 500ms 目标"
+
+  - name: athena-runtime-alerts
+    rules:
+      # 熔断器打开：LLM 依赖降级中
+      - alert: AthenaCircuitBreakerOpen
+        expr: increase(athena_incidents_total{severity=~"L2|L3|L4"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "检测到依赖故障事件"
+          description: "近5分钟出现 {{ $labels.severity }} 级事件，可能触发熔断/降级"
+      # LLM token 消耗突增：成本护栏
+      - alert: AthenaLLMTokenSpike
+        expr: sum(rate(athena_llm_tokens_total[5m])) > 5000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM token 消耗突增"
+          description: "近5分钟 token 速率 {{ $value }}/s，请检查是否有异常放大或重试风暴"

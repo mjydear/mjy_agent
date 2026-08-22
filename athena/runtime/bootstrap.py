@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -16,7 +18,13 @@ from athena.config import AthenaSettings
 from .durable import DurableRuntimeStore
 from .engine import DecisionEngine, DemoDecisionEngine
 from .llm_engine import LLMDecisionEngine
-from .memory import FourLayerRuntimeContextCompiler
+from .memory import (
+    SQLAlchemyEpisodicMemoryAdapter,
+    SQLAlchemySemanticMemoryAdapter,
+    FourLayerRuntimeContextCompiler,
+    MemoryLayer,
+    SQLAlchemySkillRetrievalAdapter,
+)
 from .runtime import AgentRuntime
 from .store import InMemoryRuntimeStore
 from .tools import ReadOnlyToolCatalog
@@ -45,6 +53,8 @@ class RuntimeAssembly:
     decision_mode: str
     memory_strategy: str
     sync_engine: Any | None = None
+    episodic_memory: Any | None = None
+    semantic_memory: Any | None = None
 
 
 def build_runtime(settings: AthenaSettings) -> RuntimeAssembly:
@@ -52,10 +62,20 @@ def build_runtime(settings: AthenaSettings) -> RuntimeAssembly:
     store: Any = InMemoryRuntimeStore()
     backend = "memory-demo"
     sync_engine = None
+    skill_retrieval = None
+    episodic_retrieval = None
+    semantic_retrieval = None
 
-    if settings.database.url and settings.database.auto_migrate:
+    database_url = settings.database.url
+    durable_requested = (
+        settings.database.backend == "durable" or database_url is not None
+    )
+    if durable_requested and not database_url:
+        database_url = _default_runtime_database_url()
+
+    if durable_requested and database_url:
         try:
-            sync_url = _sync_url(settings.database.url)
+            sync_url = _sync_url(database_url)
             options: dict[str, object] = {
                 "echo": settings.database.echo,
                 "pool_pre_ping": True,
@@ -64,18 +84,35 @@ def build_runtime(settings: AthenaSettings) -> RuntimeAssembly:
                 options["connect_args"] = {"check_same_thread": False}
             if sync_url.startswith("sqlite:///:memory:"):
                 options["poolclass"] = StaticPool
+            _ensure_sqlite_parent(sync_url)
             sync_engine = create_engine(sync_url, **options)
-            Base.metadata.create_all(sync_engine)
+            if settings.database.auto_migrate:
+                Base.metadata.create_all(sync_engine)
             store = DurableRuntimeStore(
                 sessionmaker(sync_engine, expire_on_commit=False),
                 lease_seconds=settings.worker.lease_ttl_seconds,
             )
-            backend = "sqlite-durable" if sync_url.startswith("sqlite") else "sql-durable"
+            backend = (
+                "sqlite-durable" if sync_url.startswith("sqlite") else "sql-durable"
+            )
+            skill_retrieval = SQLAlchemySkillRetrievalAdapter(
+                sessionmaker(sync_engine, expire_on_commit=False)
+            )
+            sessions = sessionmaker(sync_engine, expire_on_commit=False)
+            episodic_retrieval = SQLAlchemyEpisodicMemoryAdapter(sessions)
+            semantic_retrieval = SQLAlchemySemanticMemoryAdapter(sessions)
         except Exception as exc:  # noqa: BLE001 - local startup must remain usable
-            logger.warning("Runtime durable store unavailable; using memory adapter: %s", exc)
+            if settings.runtime.profile == "production":
+                raise RuntimeError("durable runtime store unavailable") from exc
+            logger.warning(
+                "Runtime durable store unavailable; using memory adapter: %s", exc
+            )
             if sync_engine is not None:
                 sync_engine.dispose()
                 sync_engine = None
+            skill_retrieval = None
+            episodic_retrieval = None
+            semantic_retrieval = None
 
     engine, decision_mode = _build_decision_engine(settings)
     runtime = AgentRuntime(
@@ -84,16 +121,24 @@ def build_runtime(settings: AthenaSettings) -> RuntimeAssembly:
         context_compiler=FourLayerRuntimeContextCompiler(
             model_window_tokens=16_384,
             safety_margin_tokens=1_024,
+            memory=MemoryLayer(
+                skill_retrieval=skill_retrieval,
+                episodic_retrieval=episodic_retrieval,
+                semantic_retrieval=semantic_retrieval,
+            ),
         ),
         tools=tools,
+        tenant_id=settings.security.default_tenant,
     )
     return RuntimeAssembly(
         runtime=runtime,
         store=store,
         backend=backend,
         decision_mode=decision_mode,
-        memory_strategy="working-summary-evidence-evaluated-skill",
+        memory_strategy="working-episodic-semantic-evaluated-skill",
         sync_engine=sync_engine,
+        episodic_memory=episodic_retrieval,
+        semantic_memory=semantic_retrieval,
     )
 
 
@@ -123,19 +168,26 @@ def _build_decision_engine(settings: AthenaSettings) -> tuple[DecisionEngine, st
             temperature=settings.llm.temperature,
             max_tokens=settings.llm.max_tokens,
         )
-        heavy = light if heavy_model == light_model else LLMClientFactory.create(
-            provider=settings.llm.provider,
-            model=heavy_model,
-            temperature=settings.llm.temperature,
-            max_tokens=settings.llm.max_tokens,
-        )
-        return LLMDecisionEngine(
-            ModelRouter(
-                light,
-                heavy,
-                threshold=settings.llm.routing.threshold,
+        heavy = (
+            light
+            if heavy_model == light_model
+            else LLMClientFactory.create(
+                provider=settings.llm.provider,
+                model=heavy_model,
+                temperature=settings.llm.temperature,
+                max_tokens=settings.llm.max_tokens,
             )
-        ), "llm-json"
+        )
+        return (
+            LLMDecisionEngine(
+                ModelRouter(
+                    light,
+                    heavy,
+                    threshold=settings.llm.routing.threshold,
+                )
+            ),
+            "llm-json",
+        )
     except Exception as exc:  # noqa: BLE001 - provider is optional in Demo
         logger.info("Runtime LLM unavailable, using safe fallback: %s", exc)
         if settings.runtime.profile == "production":
@@ -151,3 +203,17 @@ def _sync_url(url: str) -> str:
     if url.startswith("postgresql://"):
         return "postgresql+psycopg://" + url.removeprefix("postgresql://")
     return url
+
+
+def _default_runtime_database_url() -> str:
+    path = Path(__file__).resolve().parents[2] / ".tmp" / "athena-runtime.db"
+    return "sqlite:///" + path.as_posix()
+
+
+def _ensure_sqlite_parent(url: str) -> None:
+    parsed = make_url(url)
+    if parsed.drivername.startswith("sqlite") and parsed.database not in {
+        None,
+        ":memory:",
+    }:
+        Path(parsed.database).expanduser().parent.mkdir(parents=True, exist_ok=True)

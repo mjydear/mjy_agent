@@ -143,7 +143,9 @@ class ReadOnlyToolCatalog:
             # exercise the offline adapter without a filesystem fixture. HTTP
             # task creation validates real repository roots before reaching here.
             if tool_name != "search_code":
-                return ToolExecution(None, None, "REPOSITORY_NOT_FOUND", "repository path is unavailable")
+                return ToolExecution(
+                    None, None, "REPOSITORY_NOT_FOUND", "repository path is unavailable"
+                )
             content = {
                 "query": self._required_text(arguments, "query"),
                 "matches": [],
@@ -161,12 +163,16 @@ class ReadOnlyToolCatalog:
                     content, summary = self._get_symbol_outline(root, arguments)
                 elif tool_name == "run_test":
                     content, summary = self._run_test(root, arguments)
-                else:
+                elif tool_name == "read_artifact_range":
                     return ToolExecution(
                         None,
                         None,
                         "ARTIFACT_RANGE_REQUIRES_STORE",
                         "Artifact reads require the runtime Artifact store.",
+                    )
+                else:
+                    return ToolExecution(
+                        None, None, "UNKNOWN_TOOL", "tool is unavailable"
                     )
             except _ToolInputError as exc:
                 return ToolExecution(None, None, exc.code, str(exc))
@@ -201,7 +207,11 @@ class ReadOnlyToolCatalog:
         query = self._required_text(arguments, "query")
         matches: list[dict[str, Any]] = []
         for candidate in sorted(root.rglob("*")):
-            if len(matches) >= 24 or not candidate.is_file() or self._is_ignored(candidate):
+            if (
+                len(matches) >= 24
+                or not candidate.is_file()
+                or self._is_ignored(candidate)
+            ):
                 continue
             if candidate.suffix not in {".py", ".md", ".txt", ".json", ".yaml", ".yml"}:
                 continue
@@ -228,11 +238,15 @@ class ReadOnlyToolCatalog:
     def _read_file_range(
         self, root: Path, arguments: dict[str, Any]
     ) -> tuple[dict[str, Any], str]:
-        target = self._scoped_file(root, self._required_text(arguments, "relative_path"))
+        target = self._scoped_file(
+            root, self._required_text(arguments, "relative_path")
+        )
         start = self._positive_int(arguments.get("start_line", 1), "start_line")
         end = self._positive_int(arguments.get("end_line", start + 199), "end_line")
         if end < start or end - start > 399:
-            raise _ToolInputError("LINE_RANGE_INVALID", "line range must be between 1 and 400 lines")
+            raise _ToolInputError(
+                "LINE_RANGE_INVALID", "line range must be between 1 and 400 lines"
+            )
         lines = target.read_text(encoding="utf-8").splitlines()
         selected = [
             {"line": number, "content": line}
@@ -240,19 +254,32 @@ class ReadOnlyToolCatalog:
         ]
         relative_path = target.relative_to(root).as_posix()
         return (
-            {"relative_path": relative_path, "lines": selected, "line_count": len(lines)},
+            {
+                "relative_path": relative_path,
+                "lines": selected,
+                "line_count": len(lines),
+            },
             f"read_file_range read {relative_path} lines {start}-{min(end, len(lines))}.",
         )
 
     def _get_symbol_outline(
         self, root: Path, arguments: dict[str, Any]
     ) -> tuple[dict[str, Any], str]:
-        target = self._scoped_file(root, self._required_text(arguments, "relative_path"))
+        target = self._scoped_file(
+            root, self._required_text(arguments, "relative_path")
+        )
         if target.suffix != ".py":
-            raise _ToolInputError("SYMBOL_OUTLINE_UNSUPPORTED", "symbol outline supports Python files only")
+            raise _ToolInputError(
+                "SYMBOL_OUTLINE_UNSUPPORTED",
+                "symbol outline supports Python files only",
+            )
         tree = ast.parse(target.read_text(encoding="utf-8"), filename=str(target))
         symbols = [
-            {"name": node.name, "kind": "class" if isinstance(node, ast.ClassDef) else "function", "line": node.lineno}
+            {
+                "name": node.name,
+                "kind": "class" if isinstance(node, ast.ClassDef) else "function",
+                "line": node.lineno,
+            }
             for node in tree.body
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
         ]
@@ -265,12 +292,26 @@ class ReadOnlyToolCatalog:
     def _run_test(
         self, root: Path, arguments: dict[str, Any]
     ) -> tuple[dict[str, Any], str]:
-        target = self._scoped_file(root, self._required_text(arguments, "relative_path"))
+        target = self._scoped_file(
+            root, self._required_text(arguments, "relative_path")
+        )
         if target.suffix != ".py" or not target.name.startswith("check_"):
-            raise _ToolInputError("TEST_TARGET_FORBIDDEN", "only repository check_*.py pytest targets are permitted")
+            raise _ToolInputError(
+                "TEST_TARGET_FORBIDDEN",
+                "only repository check_*.py pytest targets are permitted",
+            )
         relative_path = target.relative_to(root).as_posix()
         completed = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", "-s", "-p", "no:cacheprovider", relative_path],
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-s",
+                "-p",
+                "no:cacheprovider",
+                relative_path,
+            ],
             cwd=root,
             shell=False,
             text=True,
@@ -280,37 +321,54 @@ class ReadOnlyToolCatalog:
         )
         output = f"{completed.stdout}{completed.stderr}"
         return (
-            {"relative_path": relative_path, "exit_code": completed.returncode, "output": output},
+            {
+                "relative_path": relative_path,
+                "exit_code": completed.returncode,
+                "output": output,
+            },
             f"run_test finished {relative_path} with exit code {completed.returncode}; full output is stored in its Artifact.",
         )
 
     @staticmethod
     def _is_ignored(path: Path) -> bool:
-        return any(part in {".git", ".pytest_cache", "__pycache__", ".venv", "node_modules"} for part in path.parts)
+        return any(
+            part in {".git", ".pytest_cache", "__pycache__", ".venv", "node_modules"}
+            for part in path.parts
+        )
 
     @staticmethod
     def _required_text(arguments: dict[str, Any], name: str) -> str:
         value = arguments.get(name)
         if not isinstance(value, str) or not value.strip():
-            raise _ToolInputError("TOOL_ARGUMENT_REQUIRED", f"{name} must be a non-empty string")
+            raise _ToolInputError(
+                "TOOL_ARGUMENT_REQUIRED", f"{name} must be a non-empty string"
+            )
         return value.strip()
 
     @staticmethod
     def _positive_int(value: Any, name: str) -> int:
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise _ToolInputError("TOOL_ARGUMENT_INVALID", f"{name} must be a positive integer")
+            raise _ToolInputError(
+                "TOOL_ARGUMENT_INVALID", f"{name} must be a positive integer"
+            )
         return value
 
     @staticmethod
     def _scoped_file(root: Path, relative_path: str) -> Path:
         candidate = Path(relative_path)
         if candidate.is_absolute():
-            raise _ToolInputError("PATH_OUT_OF_SCOPE", "absolute paths are outside the repository scope")
+            raise _ToolInputError(
+                "PATH_OUT_OF_SCOPE", "absolute paths are outside the repository scope"
+            )
         target = (root / candidate).resolve()
         if root != target and root not in target.parents:
-            raise _ToolInputError("PATH_OUT_OF_SCOPE", "path escapes the selected repository")
+            raise _ToolInputError(
+                "PATH_OUT_OF_SCOPE", "path escapes the selected repository"
+            )
         if not target.is_file():
-            raise _ToolInputError("REPOSITORY_FILE_NOT_FOUND", "repository file was not found")
+            raise _ToolInputError(
+                "REPOSITORY_FILE_NOT_FOUND", "repository file was not found"
+            )
         return target
 
 

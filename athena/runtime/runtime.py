@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import hashlib
 from dataclasses import replace
-from typing import Any
+from typing import Any, Protocol
 from uuid import uuid4
 
-from .context import RuntimeContextCompiler
 from .engine import DecisionEngine, DemoDecisionEngine
+from .memory import MemoryLayer
 from .models import (
     AdvanceResult,
     AgentTask,
@@ -27,8 +27,25 @@ from .models import (
 )
 from .store import InMemoryRuntimeStore
 from .tools import ReadOnlyToolCatalog, ToolExecution
+from .tool_gateway import RuntimeToolContext, RuntimeToolGateway
 
 _COMPACTION_ARTIFACT_BYTES = 12_000
+
+
+class ContextCompiler(Protocol):
+    """The narrow seam required by AgentRuntime for context compilation."""
+
+    def compile(
+        self,
+        *,
+        task: AgentTask,
+        tick_sequence: int,
+        working_state: Any,
+        events: tuple[Event, ...],
+        evidence: tuple[Any, ...],
+        tools: tuple[Any, ...],
+        tenant_id: str = "default",
+    ) -> Any: ...
 
 
 class AgentRuntime:
@@ -39,13 +56,34 @@ class AgentRuntime:
         *,
         store: InMemoryRuntimeStore,
         decision_engine: DecisionEngine | None = None,
-        context_compiler: RuntimeContextCompiler | None = None,
+        context_compiler: ContextCompiler | None = None,
+        memory: MemoryLayer | None = None,
         tools: ReadOnlyToolCatalog | None = None,
+        tool_gateway: RuntimeToolGateway | None = None,
+        tenant_id: str = "default",
+        environment_id: str = "runtime",
+        allowed_capabilities: frozenset[str] | None = None,
     ) -> None:
+        if not tenant_id.strip() or not environment_id.strip():
+            raise ValueError("tenant_id and environment_id must be non-empty")
         self._store = store
         self._decision_engine = decision_engine or DemoDecisionEngine()
-        self._context_compiler = context_compiler or RuntimeContextCompiler()
+        if context_compiler is not None and memory is not None:
+            raise ValueError("provide context_compiler or memory, not both")
+        if context_compiler is None:
+            # All Runtime instances use the four-layer compiler by default.
+            # Dependency injection keeps this seam testable and configurable.
+            from .memory import FourLayerRuntimeContextCompiler
+
+            context_compiler = FourLayerRuntimeContextCompiler(memory=memory)
+        self._context_compiler = context_compiler
         self._tools = tools or ReadOnlyToolCatalog()
+        self._tool_gateway = tool_gateway or RuntimeToolGateway.from_catalog(
+            self._tools
+        )
+        self._tenant_id = tenant_id
+        self._environment_id = environment_id
+        self._allowed_capabilities = allowed_capabilities
 
     def advance(
         self,
@@ -56,7 +94,9 @@ class AgentRuntime:
         task = self._store.claim(task_id, lease_id)
         snapshot = self._store.snapshot(task_id)
         if task.status.terminal:
-            return AdvanceResult(task=snapshot.task, tick=None, decision=None, context=snapshot.context)
+            return AdvanceResult(
+                task=snapshot.task, tick=None, decision=None, context=snapshot.context
+            )
         if task.cancellation_requested:
             task.status = TaskStatus.CANCELLED
             task.updated_at = utc_now()
@@ -67,10 +107,17 @@ class AgentRuntime:
                 kind="task.cancelled",
                 payload={},
             )
-            return AdvanceResult(task=replace(task), tick=None, decision=None, context=snapshot.context)
+            return AdvanceResult(
+                task=replace(task), tick=None, decision=None, context=snapshot.context
+            )
         if task.status is TaskStatus.WAITING_HUMAN and not resume_input:
-            return AdvanceResult(task=snapshot.task, tick=None, decision=None, context=snapshot.context)
-        if len(snapshot.ticks) >= task.budget.max_ticks or task.budget.remaining_tokens <= 0:
+            return AdvanceResult(
+                task=snapshot.task, tick=None, decision=None, context=snapshot.context
+            )
+        if (
+            len(snapshot.ticks) >= task.budget.max_ticks
+            or task.budget.remaining_tokens <= 0
+        ):
             task.status = TaskStatus.BUDGET_EXHAUSTED
             task.updated_at = utc_now()
             self._store.persist_task(
@@ -80,7 +127,9 @@ class AgentRuntime:
                 kind="task.budget_exhausted",
                 payload={"budget_mode": task.budget.mode},
             )
-            return AdvanceResult(task=replace(task), tick=None, decision=None, context=snapshot.context)
+            return AdvanceResult(
+                task=replace(task), tick=None, decision=None, context=snapshot.context
+            )
 
         working_state = snapshot.working_state
         if resume_input:
@@ -95,6 +144,7 @@ class AgentRuntime:
             events=snapshot.events,
             evidence=snapshot.evidence,
             tools=self._tools.declarations,
+            tenant_id=self._tenant_id,
         )
         decision = self._decision_engine.decide(context)
         tick_id = f"tick_{uuid4().hex}"
@@ -114,72 +164,99 @@ class AgentRuntime:
                         task_id,
                         tick_id,
                         "tool.rejected",
-                        {"tool_name": decision.tool_name, "reason_code": "UNKNOWN_TOOL"},
-                    )
-                )
-            else:
-                events.append(
-                    self._event(
-                        task_id,
-                        tick_id,
-                        "tool.called",
                         {
                             "tool_name": decision.tool_name,
-                            "readonly": True,
-                            "effect_id": self._effect_id(
-                                task_id, next_sequence, decision.tool_name, decision.arguments
-                            ),
+                            "reason_code": "UNKNOWN_TOOL",
                         },
                     )
                 )
-                effect_id = self._effect_id(
-                    task_id, next_sequence, decision.tool_name, decision.arguments
-                )
-                journal = getattr(self._store, "reserve_tool_effect", None)
-                complete_journal = getattr(self._store, "complete_tool_effect", None)
-                existing_effect = (
-                    journal(
-                        task_id=task_id,
-                        lease_id=lease_id,
-                        effect_id=effect_id,
-                        tool_name=decision.tool_name,
-                    )
-                    if callable(journal)
-                    else None
-                )
-                if (
-                    existing_effect is not None
-                    and existing_effect.status == "succeeded"
-                    and existing_effect.artifact is not None
-                    and existing_effect.evidence is not None
+            else:
+                if self._has_successful_tool_call(
+                    snapshot.events,
+                    tool_name=decision.tool_name,
+                    arguments=decision.arguments,
                 ):
                     execution = ToolExecution(
-                        artifact=existing_effect.artifact,
-                        evidence=existing_effect.evidence,
+                        artifact=None,
+                        evidence=None,
+                        error_code="DUPLICATE_TOOL_CALL",
+                        error_message="the same tool arguments already succeeded",
                     )
                 else:
-                    execution = self._tools.invoke(
-                        task_id=task_id,
-                        tick_id=tick_id,
-                        repository_root=task.repository_root,
-                        tool_name=decision.tool_name,
-                        arguments=decision.arguments,
+                    events.append(
+                        self._event(
+                            task_id,
+                            tick_id,
+                            "tool.called",
+                            {
+                                "tool_name": decision.tool_name,
+                                "arguments_hash": self._arguments_hash(
+                                    decision.arguments
+                                ),
+                                "readonly": True,
+                                "effect_id": self._effect_id(
+                                    task_id,
+                                    next_sequence,
+                                    decision.tool_name,
+                                    decision.arguments,
+                                ),
+                            },
+                        )
                     )
-                    if callable(complete_journal):
-                        complete_journal(
+                    effect_id = self._effect_id(
+                        task_id, next_sequence, decision.tool_name, decision.arguments
+                    )
+                    journal = getattr(self._store, "reserve_tool_effect", None)
+                    complete_journal = getattr(
+                        self._store, "complete_tool_effect", None
+                    )
+                    existing_effect = (
+                        journal(
                             task_id=task_id,
                             lease_id=lease_id,
-                            effect=ToolEffectRecord(
-                                effect_id=effect_id,
-                                task_id=task_id,
-                                tool_name=decision.tool_name,
-                                status="succeeded" if execution.succeeded else "failed",
-                                artifact=execution.artifact,
-                                evidence=execution.evidence,
-                                error_code=execution.error_code,
-                                error_message=execution.error_message,
-                            ),
+                            effect_id=effect_id,
+                            tool_name=decision.tool_name,
                         )
+                        if callable(journal)
+                        else None
+                    )
+                    if (
+                        existing_effect is not None
+                        and existing_effect.status == "succeeded"
+                        and existing_effect.artifact is not None
+                        and existing_effect.evidence is not None
+                    ):
+                        execution = ToolExecution(
+                            artifact=existing_effect.artifact,
+                            evidence=existing_effect.evidence,
+                        )
+                    else:
+                        execution = self._tool_gateway.materialize(
+                            self._tool_gateway.invoke_sync(
+                                decision,
+                                self._tool_context(task, tick_id),
+                            ),
+                            task_id=task_id,
+                            tick_id=tick_id,
+                            tool_name=decision.tool_name,
+                        )
+                        if callable(complete_journal):
+                            complete_journal(
+                                task_id=task_id,
+                                lease_id=lease_id,
+                                effect=ToolEffectRecord(
+                                    effect_id=effect_id,
+                                    task_id=task_id,
+                                    tool_name=decision.tool_name,
+                                    status=(
+                                        "succeeded" if execution.succeeded else "failed"
+                                    ),
+                                    artifact=execution.artifact,
+                                    evidence=execution.evidence,
+                                    error_code=execution.error_code,
+                                    error_message=execution.error_message,
+                                ),
+                            )
                 if not execution.succeeded:
                     task.status = TaskStatus.FAILED
                     tick_status = TickStatus.FAILED
@@ -195,11 +272,16 @@ class AgentRuntime:
                         )
                     )
                 else:
-                    assert execution.artifact is not None and execution.evidence is not None
+                    assert (
+                        execution.artifact is not None
+                        and execution.evidence is not None
+                    )
                     artifacts = (execution.artifact,)
                     evidence = (execution.evidence,)
                     working_state = self._next_working_state(
-                        working_state, execution.artifact.content, execution.evidence.evidence_id
+                        working_state,
+                        execution.artifact.content,
+                        execution.evidence.evidence_id,
                     )
                     events.append(
                         self._event(
@@ -215,7 +297,9 @@ class AgentRuntime:
                     )
         elif decision.kind is DecisionKind.FINAL:
             task.status = TaskStatus.SUCCEEDED
-            evidence_summaries = [item.summary for item in (*snapshot.evidence, *evidence)]
+            evidence_summaries = [
+                item.summary for item in (*snapshot.evidence, *evidence)
+            ]
             task.final_report = FinalReport(
                 root_cause=(
                     "；".join(evidence_summaries)
@@ -252,7 +336,9 @@ class AgentRuntime:
             task.status = TaskStatus.FAILED
             tick_status = TickStatus.FAILED
             events.append(
-                self._event(task_id, tick_id, "task.failed", {"message": decision.response})
+                self._event(
+                    task_id, tick_id, "task.failed", {"message": decision.response}
+                )
             )
 
         events.append(
@@ -286,13 +372,41 @@ class AgentRuntime:
             working_state=working_state,
             context=context,
         )
-        return AdvanceResult(task=replace(task), tick=tick, decision=decision, context=context)
+        return AdvanceResult(
+            task=replace(task), tick=tick, decision=decision, context=context
+        )
+
+    def _tool_context(self, task: Any, tick_id: str) -> RuntimeToolContext:
+        declarations = tuple(self._tools.declarations)
+        capabilities = self._allowed_capabilities
+        if capabilities is None:
+            capabilities = frozenset(
+                capability
+                for declaration in declarations
+                for capability in getattr(
+                    declaration.as_spec(), "required_capabilities", ()
+                )
+            )
+        return RuntimeToolContext(
+            task_id=task.task_id,
+            tenant_id=self._tenant_id,
+            environment_id=self._environment_id,
+            repository_root=task.repository_root,
+            lease_id="runtime",
+            allowed_capabilities=capabilities,
+            allowed_tool_names=frozenset(item.name for item in declarations),
+            selected_tool_names=tuple(item.name for item in declarations),
+            injected_arguments={"repository_root": task.repository_root},
+            call_id=tick_id,
+        )
 
     @staticmethod
     def _next_working_state(
         state: WorkingState, artifact_content: dict[str, Any], evidence_id: str
     ) -> WorkingState:
-        artifact_bytes = len(json.dumps(artifact_content, ensure_ascii=False).encode("utf-8"))
+        artifact_bytes = len(
+            json.dumps(artifact_content, ensure_ascii=False).encode("utf-8")
+        )
         compacted = artifact_bytes > _COMPACTION_ARTIFACT_BYTES
         summary = (
             "已压缩长工具输出：保留任务目标、待完成诊断与 Evidence 引用；完整结果保存在 Artifact。"
@@ -307,6 +421,34 @@ class AgentRuntime:
             human_input=state.human_input,
             compaction_count=state.compaction_count + (1 if compacted else 0),
         )
+
+    @staticmethod
+    def _has_successful_tool_call(
+        events: tuple[Event, ...], *, tool_name: str, arguments: dict[str, Any]
+    ) -> bool:
+        for called in events:
+            if (
+                called.kind != "tool.called"
+                or called.payload.get("tool_name") != tool_name
+            ):
+                continue
+            if called.payload.get("arguments_hash") != AgentRuntime._arguments_hash(
+                arguments
+            ):
+                continue
+            if any(
+                event.kind == "tool.succeeded" and event.tick_id == called.tick_id
+                for event in events
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _arguments_hash(arguments: dict[str, Any]) -> str:
+        encoded = json.dumps(
+            arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
     @staticmethod
     def _event(task_id: str, tick_id: str, kind: str, payload: dict[str, Any]) -> Event:

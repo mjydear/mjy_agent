@@ -1,4 +1,4 @@
-"""Redis Streams transport for durable OpsTask delivery."""
+"""Redis Streams transport for durable Runtime event delivery."""
 
 from __future__ import annotations
 
@@ -14,12 +14,17 @@ class TaskStreamMessage:
     task_id: str
     tenant_id: str
     traceparent: str | None
+    event_type: str | None = None
     deliveries: int = 1
 
 
 class TaskStream(Protocol):
     async def publish(
-        self, task_id: str, tenant_id: str, traceparent: str | None
+        self,
+        task_id: str,
+        tenant_id: str,
+        traceparent: str | None,
+        event_type: str | None = None,
     ) -> str: ...
 
     async def consume(
@@ -48,7 +53,11 @@ class InMemoryTaskStream:
         self._condition = asyncio.Condition()
 
     async def publish(
-        self, task_id: str, tenant_id: str, traceparent: str | None
+        self,
+        task_id: str,
+        tenant_id: str,
+        traceparent: str | None,
+        event_type: str | None = None,
     ) -> str:
         async with self._condition:
             self._sequence += 1
@@ -57,6 +66,7 @@ class InMemoryTaskStream:
                 task_id=task_id,
                 tenant_id=tenant_id,
                 traceparent=traceparent,
+                event_type=event_type,
             )
             self._pending.append(message)
             self._condition.notify_all()
@@ -120,7 +130,11 @@ class RedisTaskStream:
         self._ready = False
 
     async def publish(
-        self, task_id: str, tenant_id: str, traceparent: str | None
+        self,
+        task_id: str,
+        tenant_id: str,
+        traceparent: str | None,
+        event_type: str | None = None,
     ) -> str:
         client = await self._get_client()
         result = await client.xadd(
@@ -129,6 +143,7 @@ class RedisTaskStream:
                 "task_id": task_id,
                 "tenant_id": tenant_id,
                 "traceparent": traceparent or "",
+                "event_type": event_type or "",
             },
         )
         return self._decode(result)
@@ -231,11 +246,13 @@ class RedisTaskStream:
         if not task_id or not tenant_id:
             raise ValueError("task stream message is missing task_id or tenant_id")
         traceparent = fields.get("traceparent") or None
+        event_type = fields.get("event_type") or None
         return TaskStreamMessage(
             message_id=self._decode(message_id),
             task_id=task_id,
             tenant_id=tenant_id,
             traceparent=traceparent,
+            event_type=event_type,
             deliveries=deliveries,
         )
 

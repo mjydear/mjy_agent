@@ -83,7 +83,9 @@ class DurableRuntimeStore:
     def list_tasks(self) -> tuple[AgentTask, ...]:
         with self._sessions() as session:
             rows = session.scalars(
-                select(RuntimeAgentTaskModel).order_by(RuntimeAgentTaskModel.updated_at.desc())
+                select(RuntimeAgentTaskModel).order_by(
+                    RuntimeAgentTaskModel.updated_at.desc()
+                )
             ).all()
             return tuple(self._task_from_model(row) for row in rows)
 
@@ -101,7 +103,9 @@ class DurableRuntimeStore:
                 event_kind = "task.cancel_requested"
             task.updated_at = self._timestamp()
             self._copy_task_to_model(task, row)
-            self._append_event(session, task_id=task_id, tick_id=None, kind=event_kind, payload={})
+            self._append_event(
+                session, task_id=task_id, tick_id=None, kind=event_kind, payload={}
+            )
             return replace(task)
 
     def supply_human_input(self, task_id: str, value: str) -> AgentTask:
@@ -120,21 +124,22 @@ class DurableRuntimeStore:
             task.status = TaskStatus.QUEUED
             task.updated_at = self._timestamp()
             self._copy_task_to_model(task, row)
-            row.checkpoint_version += 1
-            session.add(
-                RuntimeCheckpointModel(
-                    id=self._id("checkpoint"),
-                    task_id=task_id,
-                    checkpoint_version=row.checkpoint_version,
-                    working_state_json=self._working_state_json(state),
-                    context_json=(
-                        self._context_json(self._context_from_json(checkpoint.context_json))
-                        if checkpoint is not None and checkpoint.context_json is not None
-                        else None
-                    ),
-                    created_at=self._timestamp(),
+            if checkpoint is None:
+                session.add(
+                    RuntimeCheckpointModel(
+                        id=self._id("checkpoint"),
+                        task_id=task_id,
+                        checkpoint_version=row.checkpoint_version,
+                        working_state_json=self._working_state_json(state),
+                        context_json=None,
+                        created_at=self._timestamp(),
+                    )
                 )
-            )
+            else:
+                # Human input changes resumable state, but does not consume a
+                # ReAct Tick. Keep checkpoint_version aligned with Tick.sequence.
+                checkpoint.working_state_json = self._working_state_json(state)
+                checkpoint.created_at = self._timestamp()
             self._append_event(
                 session,
                 task_id=task_id,
@@ -151,7 +156,10 @@ class DurableRuntimeStore:
             row = self._locked_task(session, task_id)
             now = self._timestamp()
             held_by_other = row.lease_id is not None and row.lease_id != lease_id
-            live_lease = row.lease_expires_at is not None and self._as_utc(row.lease_expires_at) > now
+            live_lease = (
+                row.lease_expires_at is not None
+                and self._as_utc(row.lease_expires_at) > now
+            )
             if held_by_other and live_lease:
                 raise LeaseConflictError(f"task is leased by {row.lease_id}")
             if row.lease_id != lease_id:
@@ -177,7 +185,9 @@ class DurableRuntimeStore:
                     RuntimeTickEventModel.task_id == task_id,
                     RuntimeTickEventModel.kind == "tick.completed",
                 )
-                .order_by(RuntimeTickEventModel.tick_sequence, RuntimeTickEventModel.sequence)
+                .order_by(
+                    RuntimeTickEventModel.tick_sequence, RuntimeTickEventModel.sequence
+                )
             ).all()
             checkpoint = self._latest_checkpoint(session, task_id)
             return RuntimeSnapshot(
@@ -234,7 +244,11 @@ class DurableRuntimeStore:
     ) -> None:
         """Atomically save one decision Tick and its complete observable result."""
 
-        if task.task_id != task_id or tick.task_id != task_id or usage.task_id != task_id:
+        if (
+            task.task_id != task_id
+            or tick.task_id != task_id
+            or usage.task_id != task_id
+        ):
             raise ValueError("aggregate records must belong to the committed task")
         if any(item.task_id != task_id for item in (*artifacts, *evidence, *events)):
             raise ValueError("aggregate records must belong to the committed task")
@@ -421,14 +435,17 @@ class DurableRuntimeStore:
         tick_status: TickStatus | None = None,
         created_at: datetime | None = None,
     ) -> None:
-        next_sequence = int(
-            session.scalar(
-                select(func.coalesce(func.max(RuntimeTickEventModel.sequence), 0)).where(
-                    RuntimeTickEventModel.task_id == task_id
+        next_sequence = (
+            int(
+                session.scalar(
+                    select(
+                        func.coalesce(func.max(RuntimeTickEventModel.sequence), 0)
+                    ).where(RuntimeTickEventModel.task_id == task_id)
                 )
+                or 0
             )
-            or 0
-        ) + 1
+            + 1
+        )
         session.add(
             RuntimeTickEventModel(
                 id=event_id or self._id("event"),
@@ -438,7 +455,9 @@ class DurableRuntimeStore:
                 kind=kind,
                 payload_json=self._json_value(payload),
                 tick_sequence=tick_sequence,
-                decision_json=self._decision_json(decision) if decision is not None else None,
+                decision_json=(
+                    self._decision_json(decision) if decision is not None else None
+                ),
                 tick_status=tick_status.value if tick_status is not None else None,
                 created_at=created_at or self._timestamp(),
             )
@@ -463,7 +482,9 @@ class DurableRuntimeStore:
 
     @staticmethod
     def _as_utc(value: datetime) -> datetime:
-        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+        return (
+            value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+        )
 
     @staticmethod
     def _json_value(value: Any) -> Any:
@@ -524,7 +545,12 @@ class DurableRuntimeStore:
 
     @classmethod
     def _tick_from_event(cls, row: RuntimeTickEventModel) -> Tick:
-        if row.tick_id is None or row.tick_sequence is None or row.decision_json is None or row.tick_status is None:
+        if (
+            row.tick_id is None
+            or row.tick_sequence is None
+            or row.decision_json is None
+            or row.tick_status is None
+        ):
             raise RuntimeError("completed tick event is missing its durable projection")
         return Tick(
             tick_id=row.tick_id,
@@ -696,9 +722,13 @@ class DurableRuntimeStore:
         return Decision(
             kind=DecisionKind(str(value["kind"])),
             reason_code=str(value["reason_code"]),
-            tool_name=str(value["tool_name"]) if value.get("tool_name") is not None else None,
+            tool_name=(
+                str(value["tool_name"]) if value.get("tool_name") is not None else None
+            ),
             arguments=dict(value.get("arguments") or {}),
-            response=str(value["response"]) if value.get("response") is not None else None,
+            response=(
+                str(value["response"]) if value.get("response") is not None else None
+            ),
         )
 
     @staticmethod
@@ -720,7 +750,9 @@ class DurableRuntimeStore:
             pending_items=tuple(str(item) for item in raw.get("pending_items", [])),
             evidence_ids=tuple(str(item) for item in raw.get("evidence_ids", [])),
             running_summary=str(raw.get("running_summary", "")),
-            human_input=(str(raw["human_input"]) if raw.get("human_input") is not None else None),
+            human_input=(
+                str(raw["human_input"]) if raw.get("human_input") is not None else None
+            ),
             compaction_count=int(raw.get("compaction_count", 0)),
         )
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 
 from athena.runtime.models import WorkingState
@@ -17,6 +18,87 @@ class SkillEvaluationState(StrEnum):
     REVIEW_PENDING = "review_pending"
     APPROVED = "approved"
     REJECTED = "rejected"
+
+
+class SemanticMemoryState(StrEnum):
+    """Lifecycle states for curated semantic facts."""
+
+    CANDIDATE = "candidate"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+@dataclass(frozen=True)
+class EpisodicMemory:
+    """A redacted, reusable summary of one completed task experience."""
+
+    memory_id: str
+    tenant_id: str
+    source_task_id: str
+    task_summary: str
+    outcome_summary: str
+    tool_names: tuple[str, ...]
+    evidence_summaries: tuple[str, ...]
+    quality_score: float
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("memory_id", self.memory_id),
+            ("tenant_id", self.tenant_id),
+            ("source_task_id", self.source_task_id),
+            ("task_summary", self.task_summary),
+        ):
+            if not value.strip():
+                raise ValueError(f"{name} must be non-empty")
+        if not 0.0 <= self.quality_score <= 1.0:
+            raise ValueError("quality_score must be between 0 and 1")
+
+    def to_prompt_payload(self) -> dict[str, object]:
+        return {
+            "memory_id": self.memory_id,
+            "task_summary": self.task_summary,
+            "outcome_summary": self.outcome_summary,
+            "tool_names": list(self.tool_names),
+            "evidence_summaries": list(self.evidence_summaries),
+            "quality_score": self.quality_score,
+        }
+
+
+@dataclass(frozen=True)
+class SemanticMemory:
+    """A tenant-scoped fact that must be approved before retrieval."""
+
+    memory_id: str
+    tenant_id: str
+    domain: str
+    fact: str
+    confidence: float
+    source_trajectory_ids: tuple[str, ...]
+    state: SemanticMemoryState
+    reviewed_by: str | None
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("memory_id", self.memory_id),
+            ("tenant_id", self.tenant_id),
+            ("domain", self.domain),
+            ("fact", self.fact),
+        ):
+            if not value.strip():
+                raise ValueError(f"{name} must be non-empty")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("confidence must be between 0 and 1")
+
+    def to_prompt_payload(self) -> dict[str, object]:
+        return {
+            "memory_id": self.memory_id,
+            "domain": self.domain,
+            "fact": self.fact,
+            "confidence": self.confidence,
+            "source_trajectory_ids": list(self.source_trajectory_ids),
+        }
 
 
 @dataclass(frozen=True)
@@ -106,7 +188,7 @@ class MemoryCheckpoint:
     def from_working_state(
         cls, working_state: WorkingState, *, tick_sequence: int = 0
     ) -> "MemoryCheckpoint":
-        """Adapt the P0 checkpoint while V1 durable checkpoints are introduced."""
+        """Create a memory checkpoint from the durable Runtime state."""
 
         summary = (
             RunningSummary(completed_facts=(working_state.running_summary,))

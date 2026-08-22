@@ -13,11 +13,11 @@ from .models import (
     Event,
     Evidence,
     RuntimeSnapshot,
+    TaskStatus,
     Tick,
+    ToolEffectRecord,
     Usage,
     WorkingState,
-    TaskStatus,
-    ToolEffectRecord,
     utc_now,
 )
 
@@ -203,10 +203,18 @@ class InMemoryRuntimeStore:
     ) -> None:
         record = self._record(task_id)
         if record.lease_id != lease_id:
-            raise LeaseConflictError("lease must be claimed before completing an effect")
+            raise LeaseConflictError(
+                "lease must be claimed before completing an effect"
+            )
         if effect.effect_id not in record.effects:
             raise ValueError("effect must be reserved before completion")
         record.effects[effect.effect_id] = effect
+
+    def effect_snapshot(self, task_id: str) -> tuple[ToolEffectRecord, ...]:
+        """Return an immutable view for isolation and idempotency audits."""
+
+        record = self._record(task_id)
+        return tuple(record.effects.values())
 
     @staticmethod
     def _append_event(

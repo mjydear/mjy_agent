@@ -10,11 +10,14 @@ from athena.infra.token_meter import TokenMeter
 from athena.runtime.models import AgentTask, ContextSnapshot, Evidence, WorkingState
 
 from .models import (
+    EpisodicMemory,
     MemoryBudget,
     MemoryBudgetError,
     MemoryCheckpoint,
     RunningSummary,
+    SemanticMemory,
 )
+from .long_term import EpisodicMemoryAdapter, SemanticMemoryAdapter
 from .retrieval import EvaluatedSkill, EvaluatedSkillRetriever, SkillRetrievalAdapter
 
 
@@ -55,6 +58,10 @@ class MemoryLayer:
         summary_reducer: SummaryReducer | None = None,
         token_meter: TokenMeter | None = None,
         skill_limit: int = 3,
+        episodic_retrieval: EpisodicMemoryAdapter | None = None,
+        semantic_retrieval: SemanticMemoryAdapter | None = None,
+        episodic_limit: int = 3,
+        semantic_limit: int = 3,
     ) -> None:
         if skill_limit < 0:
             raise ValueError("skill_limit must be non-negative")
@@ -62,6 +69,10 @@ class MemoryLayer:
         self._summary_reducer = summary_reducer or DeterministicSummaryReducer()
         self._token_meter = token_meter or TokenMeter()
         self._skill_limit = skill_limit
+        self._episodic_retrieval = episodic_retrieval
+        self._semantic_retrieval = semantic_retrieval
+        self._episodic_limit = episodic_limit
+        self._semantic_limit = semantic_limit
 
     def compile(
         self,
@@ -69,6 +80,7 @@ class MemoryLayer:
         checkpoint: MemoryCheckpoint | WorkingState,
         evidence: Iterable[Evidence],
         budget: MemoryBudget,
+        tenant_id: str = "default",
     ) -> ContextSnapshot:
         """Return a bounded model projection for the next decision Tick.
 
@@ -88,12 +100,20 @@ class MemoryLayer:
             query=task.goal,
             limit=self._skill_limit,
         )
+        episodic = self._retrieve_episodic(
+            task.goal, tenant_id=tenant_id, limit=self._episodic_limit
+        )
+        semantic = self._retrieve_semantic(
+            task.goal, tenant_id=tenant_id, limit=self._semantic_limit
+        )
         full_payload = self._build_payload(
             task=task,
             checkpoint=normalized_checkpoint,
             evidence=evidence_references,
             summary=normalized_checkpoint.running_summary,
             skills=skills,
+            episodic=episodic,
+            semantic=semantic,
             budget=budget,
             summary_candidate=False,
             forced_compaction=False,
@@ -118,6 +138,8 @@ class MemoryLayer:
                 evidence=evidence_references,
                 summary=normalized_checkpoint.running_summary,
                 skills=skills,
+                episodic=episodic,
+                semantic=semantic,
                 budget=budget,
                 summary_candidate=summary_candidate,
                 forced_compaction=False,
@@ -193,6 +215,8 @@ class MemoryLayer:
                 evidence=evidence,
                 summary=compact_summary,
                 skills=(),
+                episodic=(),
+                semantic=(),
                 budget=budget,
                 summary_candidate=True,
                 forced_compaction=True,
@@ -210,6 +234,8 @@ class MemoryLayer:
             evidence=evidence,
             summary=RunningSummary(),
             skills=(),
+            episodic=(),
+            semantic=(),
             budget=budget,
             summary_candidate=True,
             forced_compaction=True,
@@ -229,6 +255,8 @@ class MemoryLayer:
         evidence: list[dict[str, str]],
         summary: RunningSummary,
         skills: tuple[EvaluatedSkill, ...],
+        episodic: tuple[EpisodicMemory, ...],
+        semantic: tuple[SemanticMemory, ...],
         budget: MemoryBudget,
         summary_candidate: bool,
         forced_compaction: bool,
@@ -255,11 +283,12 @@ class MemoryLayer:
                 ],
             },
             "running_summary": summary.to_prompt_payload(),
+            "episodic_memory": [item.to_prompt_payload() for item in episodic],
+            "semantic_memory": [item.to_prompt_payload() for item in semantic],
             # Deliberately reference-only: this layer has no Artifact resolver
             # and never receives or reads an Artifact's raw content.
             "evidence_memory": [
-                self._compact_reference(item, compact_text_limit)
-                for item in evidence
+                self._compact_reference(item, compact_text_limit) for item in evidence
             ],
             "skill_memory": [skill.to_prompt_payload() for skill in skills],
             "memory_governance": {
@@ -273,6 +302,34 @@ class MemoryLayer:
                 "pre_compaction_utilization": 0.0,
             },
         }
+
+    def _retrieve_episodic(
+        self, query: str, *, tenant_id: str, limit: int
+    ) -> tuple[EpisodicMemory, ...]:
+        if self._episodic_retrieval is None or limit <= 0:
+            return ()
+        try:
+            return tuple(
+                self._episodic_retrieval.retrieve(
+                    query=query, tenant_id=tenant_id, limit=limit
+                )
+            )
+        except Exception:
+            return ()
+
+    def _retrieve_semantic(
+        self, query: str, *, tenant_id: str, limit: int
+    ) -> tuple[SemanticMemory, ...]:
+        if self._semantic_retrieval is None or limit <= 0:
+            return ()
+        try:
+            return tuple(
+                self._semantic_retrieval.retrieve(
+                    query=query, tenant_id=tenant_id, limit=limit
+                )
+            )
+        except Exception:
+            return ()
 
     @staticmethod
     def _evidence_references(evidence: Iterable[Evidence]) -> list[dict[str, str]]:
@@ -295,8 +352,7 @@ class MemoryLayer:
             return dict(reference)
         return {
             **reference,
-            "summary": reference["summary"][: max(1, text_limit - 3)].rstrip()
-            + "...",
+            "summary": reference["summary"][: max(1, text_limit - 3)].rstrip() + "...",
         }
 
     def _estimate(self, payload: dict[str, object]) -> int:

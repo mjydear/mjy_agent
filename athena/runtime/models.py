@@ -266,7 +266,7 @@ class ContextSnapshot:
     omitted_event_count: int
     compaction_count: int = 0
     # Tool schemas are server-selected metadata rather than model-authored
-    # context. Keeping them out of the memory payload preserves the V1 memory
+    # context. Keeping them out of the memory payload preserves the four-layer
     # contract while letting the decision engine validate its visible tools.
     tool_schemas: tuple[dict[str, Any], ...] = ()
 

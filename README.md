@@ -1,272 +1,324 @@
-# Athena Agent
+# Athena Agent Runtime
+
+面向后端任务自动化的可观测 ReAct Agent Runtime。
+
+Athena 负责把一个后端任务拆成受约束的 ReAct 执行过程，并统一管理上下文、记忆、模型路由、工具调用、证据、Token 使用、检查点和 Skill 学习。电商适配器只是第一个业务落地场景，Runtime 内核与业务领域解耦。
+
+> 当前项目定位：可运行、可观测、可评测的 Agent Runtime 核心架构原型。它不是声称已经达到 Claude Code、OpenClaw 等产品的完整生产规模。
+
+## 控制台预览
+
+Runtime Console 用于观察 Agent 的真实执行过程，而不是只展示最终回答。
+
+![Runtime Console](athena/web/static/screenshots/runtime-console.png)
+
+![Token usage and model routing](athena/web/static/screenshots/token-usage.png)
+
+![Evidence inspector](athena/web/static/screenshots/execution-timeline.png)
+
+![Skill Replay A/B](athena/web/static/screenshots/skill-evaluation.png)
+
+四张图分别展示任务总览、Token 用量与模型路由、Evidence 检查器、Skill Replay A/B 评测。页面默认连接真实 Runtime API；为了在没有数据库和 Provider 凭证时预览界面，也提供只读演示数据：
 
 ```text
-	 _   _   _                         _                    _
-	/ \ | |_| |__   ___ _ __   __ _   / \   __ _  ___ _ __ | |_
-   / _ \| __| '_ \ / _ \ '_ \ / _` | / _ \ / _` |/ _ \ '_ \| __|
-  / ___ \ |_| | | |  __/ | | | (_| |/ ___ \ (_| |  __/ | | | |_
- /_/   \_\__|_| |_|\___|_| |_|\__,_/_/   \_\__, |\___|_| |_|\__|
-										   |___/
+http://127.0.0.1:8000/?demo=1
+http://127.0.0.1:8000/?demo=1&inspector=usage
+http://127.0.0.1:8000/?demo=1&view=skills&section=replay
 ```
 
-![Python](https://img.shields.io/badge/python-3.12%2B-blue)
-![Tests](https://img.shields.io/badge/tests-424%20passed-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-%E2%89%A580%25-brightgreen)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Framework Free](https://img.shields.io/badge/agent%20core-from%20scratch-orange)
-![Cloud Native](https://img.shields.io/badge/deploy-Docker%20%7C%20K8s-informational)
+演示模式只在浏览器内提供固定的公开投影，不会调用 Provider、写入数据库或执行工具。
 
-## 项目背景
+## 为什么做这个 Runtime
 
-市面上大量 Agent 项目存在三类共性问题：**① 强依赖 LangChain / AutoGen 等黑盒框架**，链路不透明、难调试、受框架版本与生态牵制；**② 缺少生产级可靠性设计**，多停留在 demo 阶段，没有持久化、鉴权、审计、可观测与高可用；**③ 强依赖外部服务**，缺少 API Key 或云环境便无法运行，本地体验门槛高。
+普通 Agent Demo 通常只展示“输入问题 -> 输出答案”，但后端业务真正关心的是执行过程是否可控：
 
-**Athena Agent 的定位：一个从零实现、面向生产环境的通用 Agent Runtime。** 自研 ReAct 执行内核，内建持久化、模型路由、工具治理、四层记忆、Token 预算和人工闸门。代码仓库诊断是第一个可验证垂直切片，CloudOps 作为独立适配器保留。
+- 对话历史过长时，Token 成本和上下文噪声会持续增长；
+- 工具参数错误、超时或失败后，Agent 需要有边界地恢复；
+- 多轮执行必须能够追踪每个 Tick、工具调用和证据来源；
+- 一次任务产生的经验不能直接变成线上行为，必须经过校验和评测；
+- Agent 生成的 Skill 不能绕过权限、工具和安全边界。
 
-`🧩 自研 Agent Runtime` · `🏗️ 可恢复与可治理` · `🧠 记忆、Token 与 Skill 闭环`
+Athena 的目标是提供一个后端业务可以复用的 Agent 执行层：业务适配器提供任务和只读工具，Runtime 负责可靠执行与治理。
 
-> **工程原则：真实实现 + 优雅降级。** 所有外部依赖（Redis、Milvus、LLM、K8s、Prometheus、云厂商 SDK、JWT）都走真实集成路径；当凭证或服务缺失时自动降级到内存 / 关键词 / mock 兜底，保证本地零配置可跑、生产接入即生效。
-
-## 核心亮点
-
-- 🧠 **自研 Agent Core（0 框架锁定）**：执行循环、Prompt 组装、工具注册、记忆压缩全部自研实现。*解决* 主流项目黑盒依赖难调试、受框架版本牵制的问题；*价值* 核心链路可解释、可断点、可替换，问题定位更快，无第三方 Agent 框架依赖。
-- 🔁 **GEPA 自进化闭环**：执行轨迹 → 复杂度评分 → Skill 生成 → Skill 检索复用。*解决* Agent 重复踩坑、经验无法沉淀的问题；*价值* 高频任务自动固化为可复用 Skill，相似任务直接召回，减少重复推理与 Token 开销。
-- 🧩 **四层记忆系统**：Working / Profile / Long-term / Skill Memory 分层管理上下文、画像、知识与技能。*解决* 单一上下文或向量库职责混杂、检索噪声大的问题；*价值* 职责分治让召回更精准、上下文更省 Token。
-- 🛡️ **企业级安全沙箱**：工具权限白名单、路径边界、高危操作人工确认。*解决* 自动执行工具存在越权、误删等安全风险；*价值* 把自动化执行关进「可控笼子」，高危动作强制 confirmed。
-- 📈 **全链路可观测性**：Trace、Metrics、Web Console、Step Debugger，配套 Prometheus 指标、SLO 燃尽率告警与 Grafana 面板。*解决* Agent 执行像黑盒、线上排障困难的问题；*价值* 执行轨迹、Token 与任务状态全可见，显著降低调试与排障成本。
-- 🏗️ **生产就绪高可用**：Redis 持久化、健康探针与优雅关闭、RBAC/JWT 鉴权、防篡改审计链、K8s HPA/PDB/Ingress 一站式落地。*解决* 多数 Agent demo 缺高可用无法上生产的问题；*价值* 服务无状态可水平扩展，具备直接进入生产环境的工程完备度。
-- ☁️ **云原生运维场景**：K8s 故障排查、云成本优化、告警自动处置和资源巡检。*解决* 场景空泛、难以端到端落地的问题；*价值* 真实 SDK 集成、缺凭证自动降级，形成「监控 → 诊断 → 处置 → 沉淀」完整闭环。
-
-## 架构总览
+## 整体架构
 
 ```mermaid
-flowchart LR
-	User[Developer or SRE] --> CLI[CLI and Web Console]
-	CLI --> Runtime[Agent Runtime]
-	Runtime --> Worker[Lease Worker]
-	Runtime --> Memory[Four Layer Memory]
-	Runtime --> Router[Token-aware Model Router]
-	Runtime --> Tools[Governed Tool Gateway]
-	Tools --> Sandbox[Security Sandbox]
-	Runtime --> Store[Checkpoint and Effect Journal]
-	Runtime --> Trace[Events and Usage]
-	Trace --> Learn[Replay Shadow Review]
-	Learn --> Skills[Evaluated Skill Memory]
-	Skills --> Memory
-	Cloud --> K8s[K8s Diagnosis]
-	Cloud --> Cost[Cost Optimization]
-	Cloud --> Alert[Alert Handling]
+flowchart TD
+    A[Backend Request] --> B[Agent Runtime]
+    B --> C[Task Complexity]
+    C --> D[Model Router]
+    D --> E[Context Compiler]
+    E --> F[ReAct Tick]
+    F --> G{Need Tool?}
+    G -- No --> H[Structured Result]
+    G -- Yes --> I[Tool Gateway]
+    I --> J[Schema / Permission / Timeout]
+    J --> K[Read-only Tool]
+    K --> L[Evidence and Usage]
+    L --> F
+    H --> M[Checkpoint and Event History]
+    M --> N[Trajectory Digest]
+    N --> O[Candidate Skill]
+    O --> P[Static Validation]
+    P --> Q[Replay A/B]
+    Q --> R[Shadow Observation]
+    R --> S[Review and Release Gate]
 ```
 
-## 核心技术权衡
+Runtime 内核与业务适配器分离：
 
-工程价值往往体现在关键取舍上。以下是三个核心技术决策：
+```text
+HTTP / CLI / Console
+        |
+Runtime Task Service
+        |
+AgentRuntime
+  |-- bounded ReAct execution
+  |-- context and memory governance
+  |-- model routing and token budget
+  |-- tool gateway and safety boundary
+  |-- evidence, usage and checkpoint
+        |
+Backend Adapter
+  |-- task contract
+  |-- read-only tools
+  |-- replay cases
+```
 
-- **自研 Agent 核心，而非集成 LangChain / AutoGen。** 第三方框架抽象层厚、链路黑盒、受版本与生态牵制，出问题难以下钻定位。自研虽前期成本更高，但换来核心执行循环完全可解释、可断点、可替换，无框架锁定，也更贴合云运维这类需要精细控制的场景。
-- **优雅降级，而非强制依赖外部服务。** 若强绑定 Redis / Milvus / 云 SDK / API Key，本地体验与测试门槛极高。因此每个外部依赖都设计「真实集成 + 缺失降级」双路径（内存 / 关键词 / mock 兜底），代价是需维护两条路径，收益是零配置即可跑通、生产接入即生效、测试不依赖外部环境。
-- **四层记忆拆分，而非单一向量库。** 把所有上下文塞进一个向量库会导致职责混杂、检索噪声大、Token 浪费。按 Working / Profile / Long-term / Skill 四层拆分后，各层独立管理与召回，代价是设计与协调更复杂，收益是检索更精准、上下文更省、经验可沉淀复用。
+## 一次任务如何执行
 
-## 项目目录结构
+```mermaid
+sequenceDiagram
+    participant U as Backend Request
+    participant R as Runtime
+    participant M as Memory
+    participant L as Model Router
+    participant T as Tool Gateway
+    participant S as Store
+
+    U->>R: submit task
+    R->>M: retrieve relevant memory
+    R->>L: estimate complexity and select model
+    L-->>R: model decision
+    R->>R: compile bounded context
+    R->>L: request one structured decision
+    alt tool call required
+        L-->>R: tool name and arguments
+        R->>T: validate and execute read-only tool
+        T-->>R: result or typed failure
+        R->>S: persist evidence, usage and checkpoint
+        R->>L: continue next Tick
+    else final answer
+        L-->>R: structured result
+        R->>S: persist result and public events
+    end
+    R-->>U: inspectable task result
+```
+
+每个 Tick 只允许一次结构化决策和一次逻辑工具动作，并受最大 Tick、Token 预算、超时和权限约束。
+
+## 核心设计
+
+### 1. ReAct 执行引擎
+
+- 将任务执行拆成 bounded Tick，而不是允许模型无限循环；
+- 每轮只返回结构化决策：继续思考、调用工具或结束任务；
+- 保存任务状态、工具结果、Evidence、Token 使用和检查点；
+- 工具失败会生成显式失败证据，交给下一轮重新决策；
+- 达到 Tick、Token 或时间上限时，Runtime 返回可解释的失败状态。
+
+### 2. 四层记忆与上下文治理
+
+四层记忆不是全部直接放入模型上下文：
+
+| 层级 | 内容 | 读取方式 |
+| --- | --- | --- |
+| Working Memory | 当前任务、最近工具结果和待处理状态 | 每个 Tick 编译 |
+| Episodic Memory | 由通过 Eligible 门禁的脱敏轨迹生成的历史任务摘要和结果 | 按租户、关键词检索；可持久化 |
+| Semantic Memory | 经过审核的稳定领域事实和规则 | 按租户、关键词检索；仅 `approved` 可进入上下文 |
+| Skill Memory | 已验证的执行策略 | 通过 Candidate、静态校验和评测门禁读取 |
+
+Context Compiler 会根据任务相关性、优先级和 Token 预算选择内容，超过预算时依次压缩历史、裁剪工具结果和降低检索数量。模型只接收本轮真正需要的上下文。
+
+Episodic 和 Semantic 的写入边界不同：完成且通过安全门禁的任务会自动投影为 Episodic Memory；Semantic Memory 只能先以 `candidate` 提交，经过显式审核后变成 `approved`，被拒绝或未审核的事实不会被检索给模型。两层都按 `tenant_id` 隔离。
+
+长期记忆默认使用 Durable Store 持久化，默认本地 SQLite 路径为 `D:\mjy_agent\.tmp\athena-runtime.db`。相关表包括：
+
+```text
+runtime_checkpoints       # Runtime 检查点
+runtime_evidence          # Evidence 引用
+runtime_artifacts         # 工具产物
+runtime_usage             # Token 与模型用量
+runtime_skill_memory      # 评测后的 Skill 投影
+runtime_episodic_memory   # 历史任务摘要
+runtime_semantic_memory   # 有审核状态的领域事实
+```
+
+Runtime 在 Durable Store 初始化失败时，生产 profile 不会静默降级到内存；开发和演示 profile 才允许使用明确的内存回退。
+
+### 3. Token 优化与模型路由
+
+Runtime 记录每次模型调用的输入、输出和总 Token，并根据任务复杂度选择模型：
+
+- 简单任务使用轻量模型；
+- 复杂任务或连续失败任务升级到高能力模型；
+- 历史对话使用摘要代替原始消息；
+- 工具输出只保留契约字段和证据摘要；
+- 相同上下文和任务优先使用缓存；
+- 每个任务拥有独立的输入、输出和总 Token 预算。
+
+模型路由不是只按模型名称切换，还会结合任务复杂度、剩余预算、历史失败次数和当前 Tick 做决策。
+
+### 4. Tool Gateway
+
+所有工具调用经过统一网关：
+
+1. 校验模型输出中的工具名称和参数 Schema；
+2. 检查租户、Scope 和工具权限；
+3. 由 Runtime 生成 Call ID，避免模型伪造调用身份；
+4. 执行超时、有限重试和错误分类；
+5. 将成功结果或失败原因写入 Evidence；
+6. 把结构化结果返回给下一次 ReAct Tick。
+
+工具是 Runtime 的能力边界。Candidate Skill 只能提供策略和约束，不能注册工具、执行任意代码或绕过权限检查。
+
+### 5. Skill 学习与自进化
+
+```text
+Task Trajectory
+      |
+      v
+Redacted Trajectory Digest
+      |
+      v
+Candidate Skill Generation
+      |
+      v
+Static Validation
+      |
+      v
+Replay A/B: Baseline vs Candidate
+      |
+      v
+Shadow Observation
+      |
+      v
+Review and Release Gate
+```
+
+学习记录只保存脱敏轨迹摘要，不保存原始 Prompt、隐藏思维链或敏感凭证。Skill 必须先处于 Candidate 状态，经过静态校验、Replay A/B 和 Shadow 观察后，才有资格进入人工审核和发布流程。
+
+## 电商后端适配
+
+电商适配器用于证明 Runtime 可以接入真实后端问题，而不是把电商逻辑写进 Runtime 内核。
+
+示例任务：
+
+```text
+订单为什么支付失败？
+```
+
+Agent 可以按以下步骤执行：
+
+1. 查询订单状态；
+2. 查询支付记录；
+3. 查询库存或业务事件；
+4. 汇总证据并判断可能原因；
+5. 输出结构化诊断结果和下一步建议。
+
+换成客服、风控、供应链、研发助手或数据分析场景时，只需要替换后端领域适配器、工具和 Replay Case，Runtime 核心保持不变。
+
+## 实验与验证
+
+项目同时支持离线确定性测试和 Provider Benchmark：
+
+- 离线测试验证 Runtime 合同、工具边界、记忆治理和 Skill 生命周期；
+- Replay A/B 使用同一批任务比较 Baseline 与 Candidate；
+- Shadow 用于观察 Candidate 在真实或模拟流量下的行为，不直接改变线上结果；
+- Provider Benchmark 用于记录不同模型的 Token、延迟、成功率和成本。
+
+当前已经验证的重点指标包括：
+
+| 指标 | 用途 |
+| --- | --- |
+| task_success | 判断任务是否完成 |
+| evidence_retention | 判断关键证据是否保留 |
+| tick_count | 衡量执行步数 |
+| tool_call_count | 衡量工具调用次数 |
+| input/output/total_tokens | 衡量上下文成本 |
+| latency_ms | 衡量响应延迟 |
+| safety_violations | 衡量安全边界是否被突破 |
+
+真实实验结果必须同时记录任务集、模型、Provider、价格配置和运行时间，避免把单次 Demo 结果当成通用结论。
+
+#### Skill Replay A/B 负向门禁案例
+
+下面是早期 Candidate Skill 的真实离线 Replay A/B 结果。它没有发布，因为功能指标不下降但 Token 成本超过门禁：
+
+| 指标 | Baseline | Candidate | 变化 |
+| --- | ---: | ---: | ---: |
+| 任务成功率 | 66.67% | 66.67% | 0 |
+| Evidence 保留率 | 100% | 100% | 0 |
+| 平均 Tick | 2.167 | 2.167 | 0 |
+| 平均工具调用 | 1.500 | 1.500 | 0 |
+| 平均输入 Token | 1553.917 | 1683.917 | +8.366% |
+| 平均总 Token | 1692.583 | 1822.583 | +7.681% |
+| 平均延迟 | 322.382 ms | 312.291 ms | -3.130% |
+| 安全违规 | 0 | 0 | 0 |
+
+该 Candidate 因总 Token 增幅超过 5% 的发布门禁而被拒绝，没有进入 Active。这个结果说明评测链路能够发现“功能不下降但成本变高”的 Skill，而不是只统计成功率。
+
+#### 四层记忆 Token A/B
+
+在固定 12 Case 任务集上，使用真实 DeepSeek Provider，对比完整历史上下文和四层记忆上下文：
+
+| 指标 | Full History | Four Layer | 变化 |
+| --- | ---: | ---: | ---: |
+| Case 数量 | 12 | 12 | 相同 |
+| 任务成功率 | 100% | 100% | 0 |
+| Evidence 保留率 | 100% | 100% | 0 |
+| 平均 Tick | 2.83 | 2.83 | 0 |
+| 平均输入 Token | 3422.17 | 2646.25 | -22.67% |
+| 平均输出 Token | 168.67 | 172.92 | +2.52% |
+| 平均总 Token | 3590.83 | 2819.17 | -21.49% |
+| P50 延迟 | 6506.670 ms | 5017.146 ms | -22.89% |
+| P95 延迟 | 19154.575 ms | 8732.689 ms | -54.41% |
+| 安全违规 | 0 | 0 | 0 |
+
+该实验使用固定离线任务集和真实 `deepseek/deepseek-chat`，运行报告保存在本机 `D:\mjy_agent\.tmp`，不是线上流量或生产 SLA。当前价格配置没有匹配该 Provider 的价格字段，因此不宣称费用下降；Token 降低只能说明这组任务上的上下文成本下降。
+
+## 代码结构
 
 ```text
 athena/
-├── agent/          # 自研 ReAct 核心、推理循环、多 Agent 工作流编排
-├── memory/         # 四层记忆系统（Working / Profile / Long-term / Skill）
-├── tools/          # 工具注册、安全沙箱、防篡改审计链、云运维工具集
-├── api/            # Web 服务、RBAC/JWT 鉴权、审计与告警接口、健康探针
-├── observability/  # 链路追踪、熔断限流、Prometheus 指标与 SLO 告警
-├── learning/       # GEPA 自进化、复杂度评分、Skill 生成与优化
-├── infra/          # LLM 适配、缓存（Redis 降级）、向量库、嵌入
-└── evaluation/     # Benchmark 引擎与评测报告
+├── runtime/       # Agent Runtime、ReAct、四层记忆、Durable Store、Tool Gateway
+├── learning/      # Trajectory、Skill 生成与静态校验
+├── evaluation/    # Replay、A/B、Shadow 和 Provider Benchmark
+├── backend/       # 电商后端适配器与只读工具
+├── application/   # 任务、学习、评测和流量编排服务
+├── api/            # HTTP API、Repository 和路由
+├── infra/          # 模型、缓存、Token 和韧性组件
+└── web/            # Runtime Console 前端
 ```
 
-## 云场景闭环
+## 当前边界
 
-```mermaid
-flowchart TB
-	Alert[Alertmanager Webhook] --> Parse[Alert Parser]
-	Parse --> Workflow[Fault Diagnose Workflow]
-	Workflow --> Snapshot[K8s and Cloud Snapshot]
-	Snapshot --> Diagnose[Root Cause Analysis]
-	Diagnose --> Guard{High Risk Operation?}
-	Guard -->|No| Report[Recommendation Report]
-	Guard -->|Yes| Confirm[Human Confirmation]
-	Confirm --> Execute[Sandboxed Execution]
-	Execute --> Knowledge[Ops Knowledge Base]
-	Report --> Knowledge
-```
+Athena 当前重点是 Agent Runtime 的核心机制和工程验证：
 
-## 生产就绪能力（Enterprise Readiness）
+- 当前以单 Agent ReAct 为主，多 Agent 协作不是本项目的核心卖点；
+- 电商适配器是参考实现，不代表接入任意业务后即可自动完成所有任务；
+- Provider Benchmark 需要用户自行配置模型凭证；
+- Skill 发布仍需要显式审核和发布门禁；
+- Shadow 主要用于对 Candidate 的线上行为进行观测；
+- 项目不保存隐藏 Chain-of-Thought，也不把模型输出直接当作可信执行指令。
 
-以下是面向生产标准设计的高可用与治理能力；代码和离线测试已覆盖主要契约，真实生产指标仍需在目标环境中单独验证（对应实现文件详见 [开发文档](docs/guides/development.md)）：
+## 后续方向
 
-| 维度 | 能力 | 生产价值 |
-| --- | --- | --- |
-| 🗄️ 状态持久化 | 会话 / 任务 / 指标 / 评测报告外置 Redis，重启不丢、多副本共享 | 服务无状态，可水平扩展 |
-| ❤️ 健康与发布 | `/healthz` 存活、`/readyz` 就绪 + Lifespan 优雅关闭（置 draining、排空任务、关连接） | 滚动升级零感知，K8s 自动摘流不丢请求 |
-| 🔐 鉴权授权 | Scope 级 RBAC（`workflow:run` / `cloud:execute` / `benchmark:run` / `audit:read`）+ 可选 JWT Bearer；未配置凭证时默认放行保证向后兼容 | 细粒度最小权限，支持多租户接入 |
-| 🧾 防篡改审计 | `sha256(prev_hash + payload)` 哈希链集中落库，`/api/audit/verify` 可对外证明完整性 | 操作留痕不可抵赖，满足合规审计 |
-| 📊 SLO 与告警 | 提供可用性 / 延迟目标配置、多窗口燃尽率告警（快烧 14.4x / 慢烧 6x）+ Alertmanager 抑制路由 + Grafana 面板 | 错误预算量化，故障提前分级预警 |
-| 🔁 告警闭环 | Alertmanager Webhook → 解析 → 写审计链，接自愈工作流入口 | 监控到处置全自动，缩短 MTTR |
-| 🧯 弹性容错 | 自研异步熔断器、退避重试、限流，LLM 依赖故障自动降级 | 依赖抖动不雪崩，核心链路不被打垮 |
-| ☸️ 云原生编排 | Docker 多阶段非 root 镜像、K8s Deployment/HPA（CPU+自定义指标）/PDB/Ingress(TLS) | 一键部署，按负载弹性伸缩 |
-| ✅ 质量保障 | 424 项离线测试通过；真实 Redis 集成测试在依赖缺失时跳过 | 回归有保障，性能可度量 |
+- 完善多 Agent 工作流编排；
+- 增加客服、风控、供应链等后端适配器；
+- 完善 Shadow 流量平台、人工审批和回滚；
+- 持续扩充跨模型、跨任务的可复现实验数据。
 
-## 5 分钟快速开始
+## License
 
-### 环境准备
-
-Linux / macOS：
-
-```bash
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-pip install -e .
-python -m pytest -m "not integration"
-```
-
-Windows PowerShell：
-
-```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-pip install -e .
-python -m pytest -m "not integration"
-```
-
-### 零配置体验模式（无需任何 API Key / 外部服务）
-
-得益于「优雅降级」设计，不填任何配置即可跑通以下能力：
-
-```bash
-athena web --host 127.0.0.1 --port 8000   # 启动 Web Console，访问 http://127.0.0.1:8000
-```
-
-零配置下可用：Web Console、`/healthz` `/readyz` 健康探针、指标与审计接口、多 Agent 工作流（规则降级）、云运维场景（mock 数据）、Benchmark 评测（确定性 runner）、全量单元测试。缓存 / 向量库 / 嵌入均自动降级到内存后端。
-
-### 完整功能模式（启用真实 LLM）
-
-配置 `.env` 并显式打开开关后启用真实对话与规划能力：
-
-```env
-DEEPSEEK_API_KEY=你的 DeepSeek API Key
-ATHENA_LLM_ENABLED=true
-ATHENA_LLM_MODEL=deepseek/deepseek-chat
-```
-
-```bash
-athena chat "你好，请介绍一下 Athena Agent"
-```
-
-**预期效果**：CLI 返回带完整 ReAct 推理轨迹（Thought / Action / Observation）的回答；Web Console 可实时查看执行步骤、Token 消耗与任务状态。配置 Redis（`redis_url`）后，会话 / 任务 / 审计自动持久化并支持多副本共享。
-
-### 真实 Provider Benchmark
-
-真实实验不会因为项目里存在 `.env` 就自动出网，必须显式使用 `--live`。原始结果保存在被忽略的 `artifacts/`，提交到 GitHub 的只有脱敏聚合报告：
-
-```powershell
-python scripts/run_provider_benchmark.py --live `
-  --provider litellm `
-  --light-model deepseek/deepseek-v4-flash `
-  --heavy-model deepseek/deepseek-v4-pro `
-  --price-config benchmarks/agent-runtime/deepseek-prices-2026-08-11.json
-python scripts/run_runtime_provider_benchmark.py --live `
-  --light-model deepseek/deepseek-v4-flash `
-  --heavy-model deepseek/deepseek-v4-pro `
-  --price-config benchmarks/agent-runtime/deepseek-prices-2026-08-11.json
-python scripts/export_public_benchmark_report.py
-```
-
-当前已提交的真实结果见 [DeepSeek Provider 实验报告](docs/benchmarks/live_provider_results.md)，公开 JSON 位于 [results/deepseek-v4-2026-08-11-public.json](docs/benchmarks/results/deepseek-v4-2026-08-11-public.json)。
-
-## 功能特性
-
-### 通用 Agent 能力
-
-- ⚙️ ReAct 多步执行循环，支持工具调用、Observation 回填和最大步数保护。
-- 🧰 装饰器式 Tool Registry，自动提取函数签名和工具描述。
-- 🧠 Token 感知 Working Memory，支持重要性评分和裁剪策略。
-- 🔎 Tree-sitter 代码结构解析，面向代码理解与测试生成场景。
-- 📚 Skill Library 基于长期记忆做语义召回。
-- 📊 Benchmark Engine 支持用例集、成功率和 Markdown 报告输出。
-
-### 云运维能力
-
-- ☸️ K8s CrashLoopBackOff / ImagePullBackOff / 资源压力诊断（Kubernetes SDK 真实拉取，缺集群自动降级 mock）。
-- 💸 云成本优化：识别闲置实例并估算月度节省（阿里云 / AWS SDK 真实接入，缺凭证降级）。
-- 🚨 告警自动处置：`/api/alerts/webhook` 接 Alertmanager，触发故障排查工作流并写审计链。
-- 🔐 高危操作确认：重启实例等动作必须经过 confirmed 标记。
-- 🧾 运维知识沉淀：故障工作流结果进入 Ops Knowledge Base，支持向量语义召回（嵌入缺失降级关键词）。
-
-## Demo
-
-| Demo | 场景 | 命令 |
-| --- | --- | --- |
-| 自进化 | 已验证经验 → Skill Candidate → Replay/Shadow → 人工审核 | `python examples/demo2_self_evolution.py` |
-| K8s 诊断 | Pod 异常只读诊断与处置建议 | `python examples/demo4_k8s_diagnose.py` |
-| 告警处置 | Alertmanager 告警 → Durable OpsTask | `python examples/demo6_alert_auto_handle.py` |
-| Multi-Agent | 规划、执行和校验 Agent 协作 | `python examples/demo_multi_agent.py` |
-| Web Console | 任务状态、Evidence 和执行轨迹 | `python examples/demo_web_console.py` |
-| Benchmark | Agent 成本、步骤和成功率评估 | `python examples/demo_benchmark.py` |
-
-## 技术栈
-
-  - Python 3.12+
-- LiteLLM 模型适配层
-- Typer / Rich / Textual CLI 与 TUI
-- FastAPI / Uvicorn Web Console
-- Pydantic / SQLAlchemy 数据建模
-- Redis 会话 / 任务 / 指标 / 审计持久化（内存后端自动降级）
-- PyJWT + Scope RBAC 鉴权授权
-- Prometheus / Grafana / Alertmanager 可观测性与 SLO 告警
-- Tree-sitter 代码解析
-- RestrictedPython 安全沙箱
-- Milvus 适配边界与内存向量库 fallback
-- Docker / Kubernetes（HPA / PDB / Ingress）云原生部署
-- Kubernetes / Prometheus / 云厂商 SDK 真实集成与降级适配
-
-## 测试与质量
-
-- ✅ **424 项离线测试通过**，覆盖 Agent 核心、记忆、沙箱、API、鉴权、审计链、可观测性等模块。
-- 🧪 **集成测试**：`tests/integration/` 对真实 Redis 做往返验证，缺依赖自动跳过（`pytest -m integration`）。
-- 📈 **压测脚本**：`tests/load/locustfile.py` 模拟读写混合流量（`locust -f tests/load/locustfile.py`）。
-- 🔍 **静态质量**：`black` / `isort` 格式化，`mypy` 类型检查，覆盖率红线 ≥ 80%。
-
-```powershell
-python -m pytest -q                       # 424 passed；Redis 缺失时 4 个集成测试 skipped
-python -m pytest -m "not integration" -q  # 424 个离线测试
-```
-
-
-## 文档
-
-- [docs/architecture/overview.md](docs/architecture/overview.md)
-- [docs/guides/getting-started.md](docs/guides/getting-started.md)
-- [docs/guides/development.md](docs/guides/development.md)
-- [docs/guides/deployment.md](docs/guides/deployment.md)
-- [docs/reference/api.md](docs/reference/api.md)
-- [docs/reference/faq.md](docs/reference/faq.md)
-- [docs/README.md](docs/README.md)
-- [docs/demos/demo_guide.md](docs/demos/demo_guide.md)
-- [docs/benchmarks/performance_report.md](docs/benchmarks/performance_report.md)
-- [docs/benchmarks/live_provider_results.md](docs/benchmarks/live_provider_results.md)
-- [docs/features/enterprise_cloudops_agent_architecture.md](docs/features/enterprise_cloudops_agent_architecture.md)
-- [docs/features/enterprise_cloudops_agent_implementation_plan.md](docs/features/enterprise_cloudops_agent_implementation_plan.md)
-- [docs/interview/resume.md](docs/interview/resume.md)
-- [docs/interview/questions.md](docs/interview/questions.md)
-- [docs/interview/demo_script.md](docs/interview/demo_script.md)
-
-## 质量红线
-
-- 当前 `requirements.txt` 未引入 LangChain、AutoGen、LlamaIndex 等第三方 Agent 框架。
-- 性能报告只记录可复现实测数据，未实测的对比项保留为待补录。
-- 面试前必须本机跑通 6 个 demo、`pytest`、格式化、类型检查和覆盖率报告。
-
-## 贡献指南
-
-1. Fork 仓库并创建 feature 分支。
-2. 安装依赖：`pip install -r requirements.txt && pip install -e .`。
-3. 新增功能必须附带单元测试或 demo 验证路径。
-4. 提交前运行 `black .`、`isort .`、`mypy athena examples tests`、`pytest`。
-5. PR 描述写清楚变更动机、测试结果和潜在风险。
+待补充。

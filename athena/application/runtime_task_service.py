@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from athena.application.runtime_worker import RuntimeWorker
+from athena.application.runtime_long_term_memory_service import (
+    RuntimeLongTermMemoryService,
+)
 from athena.runtime import (
     AgentRuntime,
     AgentTask,
@@ -28,6 +31,8 @@ class RuntimeTaskService:
         decision_mode: str = "deterministic-demo",
         memory_strategy: str = "p0-bounded-context",
         worker: RuntimeWorker | None = None,
+        episodic_memory: Any | None = None,
+        semantic_memory: Any | None = None,
     ) -> None:
         self._runtime = runtime
         self._store = store
@@ -35,8 +40,15 @@ class RuntimeTaskService:
         self._backend = backend
         self._decision_mode = decision_mode
         self._memory_strategy = memory_strategy
+        self._long_term_memory = RuntimeLongTermMemoryService(
+            store,
+            episodic_memory=episodic_memory,
+            semantic_memory=semantic_memory,
+        )
 
-    def create(self, *, goal: str, repository_path: str, profile: str | None) -> dict[str, object]:
+    def create(
+        self, *, goal: str, repository_path: str, profile: str | None
+    ) -> dict[str, object]:
         root = Path(repository_path).expanduser().resolve()
         if not root.is_dir():
             raise ValueError("REPOSITORY_PATH_INVALID")
@@ -60,18 +72,26 @@ class RuntimeTaskService:
     def detail(self, task_id: str) -> dict[str, object]:
         return self.task_view(self._store.snapshot(task_id))
 
-    def run(self, task_id: str) -> dict[str, object]:
+    def run(self, task_id: str, *, tenant_id: str = "public") -> dict[str, object]:
         before = self._store.snapshot(task_id)
-        if not before.task.status.terminal and before.task.status is not TaskStatus.WAITING_HUMAN:
+        if (
+            not before.task.status.terminal
+            and before.task.status is not TaskStatus.WAITING_HUMAN
+        ):
             self._worker.run_to_boundary(
                 task_id,
                 max_ticks=min(12, before.task.budget.max_ticks),
             )
-        return self.task_view(self._store.snapshot(task_id))
+        snapshot = self._store.snapshot(task_id)
+        if snapshot.task.status is TaskStatus.SUCCEEDED:
+            self._long_term_memory.capture_episodic(task_id, tenant_id=tenant_id)
+        return self.task_view(snapshot)
 
-    def supply_human_input(self, task_id: str, value: str) -> dict[str, object]:
+    def supply_human_input(
+        self, task_id: str, value: str, *, tenant_id: str = "public"
+    ) -> dict[str, object]:
         self._store.supply_human_input(task_id, value)
-        return self.run(task_id)
+        return self.run(task_id, tenant_id=tenant_id)
 
     def cancel(self, task_id: str) -> dict[str, object]:
         self._store.cancel_task(task_id)
@@ -90,7 +110,10 @@ class RuntimeTaskService:
             for event in snapshot.events
             if event.sequence > after
         ]
-        return {"items": items, "next_cursor": items[-1]["sequence"] if items else after}
+        return {
+            "items": items,
+            "next_cursor": items[-1]["sequence"] if items else after,
+        }
 
     def evidence(self, task_id: str) -> dict[str, object]:
         snapshot = self._store.snapshot(task_id)
@@ -112,7 +135,9 @@ class RuntimeTaskService:
         context = snapshot.context
         compiled = context.payload if context is not None else {}
         working_memory = compiled.get("working_memory", {})
-        running_summary = compiled.get("running_summary", snapshot.working_state.running_summary)
+        running_summary = compiled.get(
+            "running_summary", snapshot.working_state.running_summary
+        )
         governance = compiled.get("memory_governance", {})
         return {
             "snapshot": {
@@ -123,18 +148,22 @@ class RuntimeTaskService:
                 },
                 "pinned_evidence": list(snapshot.working_state.evidence_ids),
                 "running_summary": running_summary,
-                "selected_tool_schemas": list(
-                    context.tool_schemas if context is not None else compiled.get("selected_tool_schemas", [])
-                ),
+                "selected_tool_schemas": list(context.tool_schemas if context else ()),
                 "recent_events": compiled.get("recent_events", []),
                 "memory_references": {
-                    "evidence": compiled.get("evidence_memory", compiled.get("evidence", [])),
+                    "evidence": compiled.get("evidence_memory", []),
+                    "episodic": compiled.get("episodic_memory", []),
+                    "semantic": compiled.get("semantic_memory", []),
                     "skills": compiled.get("skill_memory", []),
-                    "unresolved_tool_pairs": working_memory.get("unresolved_tool_pairs", []),
+                    "unresolved_tool_pairs": working_memory.get(
+                        "unresolved_tool_pairs", []
+                    ),
                 },
             },
             "metrics": {
-                "estimated_input_tokens": context.estimated_input_tokens if context else 0,
+                "estimated_input_tokens": (
+                    context.estimated_input_tokens if context else 0
+                ),
                 "input_budget_tokens": context.input_budget_tokens if context else 0,
                 "omitted_event_count": context.omitted_event_count if context else 0,
                 "compaction_count": max(

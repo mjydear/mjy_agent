@@ -14,15 +14,12 @@ class ErrorCode(StrEnum):
     TOOL_NOT_FOUND = "TOOL_NOT_FOUND"
     TOOL_EXECUTION_FAILED = "TOOL_EXECUTION_FAILED"
     AGENT_EXECUTION_FAILED = "AGENT_EXECUTION_FAILED"
-    VECTOR_STORE_FAILED = "VECTOR_STORE_FAILED"
-    OPS_NAMESPACE_FORBIDDEN = "OPS_NAMESPACE_FORBIDDEN"
-    OPS_LIVE_UNAVAILABLE = "OPS_LIVE_UNAVAILABLE"
-    ENV_SCOPE_DENIED = "ENV_SCOPE_DENIED"
-    ENV_CONNECTION_FAILED = "ENV_CONNECTION_FAILED"
-    ENV_PERMISSION_DENIED = "ENV_PERMISSION_DENIED"
-    ENV_TIMEOUT = "ENV_TIMEOUT"
-    ENV_DATA_ORIGIN_FORBIDDEN = "ENV_DATA_ORIGIN_FORBIDDEN"
-    ENV_METRICS_UNAVAILABLE = "ENV_METRICS_UNAVAILABLE"
+    RESOURCE_SCOPE_DENIED = "RESOURCE_SCOPE_DENIED"
+    DATA_ORIGIN_FORBIDDEN = "DATA_ORIGIN_FORBIDDEN"
+    SCOPE_PERMISSION_DENIED = "SCOPE_PERMISSION_DENIED"
+    DEPENDENCY_CONNECTION_FAILED = "DEPENDENCY_CONNECTION_FAILED"
+    DEPENDENCY_TIMEOUT = "DEPENDENCY_TIMEOUT"
+    DEPENDENCY_UNAVAILABLE = "DEPENDENCY_UNAVAILABLE"
 
 
 class AthenaError(Exception):
@@ -60,9 +57,5 @@ class AgentError(AthenaError):
     """Raised when the agent execution loop fails."""
 
 
-class VectorStoreError(AthenaError):
-    """Raised when vector storage operations fail."""
-
-
-class OpsError(AthenaError):
-    """Raised when a cloud-ops (K8s) safety boundary is violated."""
+class RuntimePolicyError(AthenaError):
+    """Raised when a Runtime policy or resource scope is violated."""

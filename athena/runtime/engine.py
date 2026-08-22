@@ -24,11 +24,9 @@ class DemoDecisionEngine:
 
     def decide(self, context: ContextSnapshot) -> Decision:
         goal = str(context.payload["task"]["goal"])
-        working_state = context.payload.get(
-            "working_state", context.payload.get("working_memory", {})
-        )
+        working_state = context.payload["working_memory"]
         human_input = working_state.get("human_input")
-        evidence = context.payload.get("evidence", context.payload.get("evidence_memory", []))
+        evidence = context.payload["evidence_memory"]
         normalized_goal = goal.lower()
         if "ask human" in normalized_goal and not human_input:
             return Decision(

@@ -1,13 +1,5 @@
 """Learning and self-improvement package."""
 
-from athena.learning.complexity import (
-    ComplexityEvaluator,
-    ComplexityScore,
-    ComplexityWeights,
-)
-from athena.learning.curator import CuratorDaemon
-from athena.learning.skill_gen import SkillGenerationResult, SkillGenerator
-from athena.learning.skill_optimizer import SkillValidationResult, SkillValidator
 from athena.learning.skill_candidate import (
     CANDIDATE_STATUS,
     REJECTED_STATUS,
@@ -20,36 +12,36 @@ from athena.learning.skill_candidate import (
     SkillCandidateLifecycleError,
     SkillCandidateProposal,
     SkillCandidateSourceError,
+    TrajectorySkillCandidateProposal,
     VerifiedEvidenceSummary,
     VerifiedLearningSource,
     VerifiedLearningSourceResolver,
 )
-from athena.learning.tracer import EventBus, TraceEvent, TraceObserver, Tracer
-
+from athena.learning.skill_validation import (
+    CandidateValidationCategory,
+    CandidateValidationReport,
+    CandidateValidationViolation,
+    SKILL_CANDIDATE_SCHEMA_VERSION,
+    SKILL_CANDIDATE_VALIDATOR_VERSION,
+)
 __all__ = [
-    "ComplexityEvaluator",
-    "ComplexityScore",
-    "ComplexityWeights",
     "CANDIDATE_STATUS",
-    "CuratorDaemon",
-    "EventBus",
-    "SkillGenerationResult",
-    "SkillGenerator",
+    "CandidateValidationCategory",
+    "CandidateValidationReport",
+    "CandidateValidationViolation",
     "SkillCandidate",
     "SkillCandidateBridge",
     "SkillCandidateError",
     "SkillCandidateLifecycleError",
     "SkillCandidateProposal",
     "SkillCandidateSourceError",
-    "SkillValidationResult",
-    "SkillValidator",
+    "TrajectorySkillCandidateProposal",
+    "SKILL_CANDIDATE_SCHEMA_VERSION",
+    "SKILL_CANDIDATE_VALIDATOR_VERSION",
     "REJECTED_STATUS",
     "REPLAY_PENDING_STATUS",
     "REVIEW_PENDING_STATUS",
     "SHADOW_STATUS",
-    "TraceEvent",
-    "TraceObserver",
-    "Tracer",
     "VerifiedEvidenceSummary",
     "VerifiedLearningSource",
     "VerifiedLearningSourceResolver",

@@ -1,3 +1,5 @@
+import { mountSkillEvaluation } from "./pages/skill-evaluation.js";
+
 const RUNTIME_ROOT = "/api/runtime/tasks";
 const POLL_INTERVAL_MS = 1800;
 const TERMINAL_STATUSES = new Set([
@@ -283,7 +285,9 @@ export function mountRuntimeConsole(host, options) {
     evidence: [],
     context: null,
     usage: null,
-    activeInspector: "run",
+    activeInspector: ["run", "context", "evidence", "usage"].includes(options.initialInspector)
+      ? options.initialInspector
+      : "run",
     listStatus: "loading",
     detailStatus: "idle",
     inspectorStatus: "idle",
@@ -291,6 +295,8 @@ export function mountRuntimeConsole(host, options) {
     busyAction: null,
     requestVersion: 0,
     pollTimer: null,
+    activeView: options.initialView === "skills" ? "skills" : "tasks",
+    skillController: null,
   };
 
   function selectedTask() {
@@ -357,6 +363,12 @@ export function mountRuntimeConsole(host, options) {
     const sidebar = createElement("aside", { className: "runtime-console__sidebar" }, [
       heading,
       navigation,
+      createElement("button", {
+        className: "runtime-console__skill-launcher",
+        text: state.activeView === "skills" ? "返回 Runtime 任务" : "打开 Skill 评测",
+        type: "button",
+        dataset: { action: "select-view", view: state.activeView === "skills" ? "tasks" : "skills" },
+      }),
       createElement("div", { className: "runtime-console__sidebar-section" }, [
         createElement("div", { className: "runtime-console__section-heading" }, [
           createElement("h2", { text: "任务" }),
@@ -608,8 +620,28 @@ export function mountRuntimeConsole(host, options) {
     ]);
   }
 
+  function renderSkillView() {
+    const host = createElement("div", { className: "runtime-console__skill-host" });
+    return {
+      shell: createElement("section", { className: "runtime-console", ariaLive: "polite" }, [host]),
+      host,
+    };
+  }
+
   function render() {
     if (state.destroyed) return;
+    if (state.activeView === "skills") {
+      state.skillController?.destroy();
+      const view = renderSkillView();
+      root.replaceChildren(view.shell);
+      state.skillController = mountSkillEvaluation(view.host, {
+        api,
+        initialSection: options.initialSkillSection,
+      });
+      return;
+    }
+    state.skillController?.destroy();
+    state.skillController = null;
     const shell = createElement("section", { className: "runtime-console", ariaLive: "polite" });
     if (state.error && state.listStatus === "error") {
       shell.append(createErrorState(state.error, "refresh-list"));
@@ -898,7 +930,13 @@ export function mountRuntimeConsole(host, options) {
   async function handleClick(event) {
     const target = event.target.closest("[data-action]");
     if (!target || !root.contains(target)) return;
-    const { action, taskId, inspector } = target.dataset;
+    const { action, taskId, inspector, view } = target.dataset;
+    if (action === "select-view") {
+      state.activeView = view === "skills" ? "skills" : "tasks";
+      render();
+      if (state.activeView === "tasks" && !state.tasks.length) await loadTaskList({ selectFirst: false });
+      return;
+    }
     if (action === "select-task") await selectTask(taskId);
     if (action === "refresh-list") await loadTaskList({ selectFirst: false });
     if (action === "refresh-selected") await refreshSelected();
@@ -928,6 +966,8 @@ export function mountRuntimeConsole(host, options) {
     destroy: () => {
       state.destroyed = true;
       window.clearTimeout(state.pollTimer);
+      state.skillController?.destroy();
+      state.skillController = null;
       root.removeEventListener("click", handleClick);
       root.removeEventListener("submit", handleSubmit);
       root.replaceChildren();

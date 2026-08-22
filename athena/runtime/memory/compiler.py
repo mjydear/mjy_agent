@@ -1,10 +1,18 @@
-"""Adapter that makes the V1 memory contract usable by the ReAct runtime."""
+"""Compile the Runtime four-layer memory contract for ReAct decisions."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
-from athena.runtime.models import AgentTask, ContextSnapshot, Event, Evidence, WorkingState
+from athena.infra.token_meter import TokenMeter
+from athena.runtime.models import (
+    AgentTask,
+    ContextSnapshot,
+    Event,
+    Evidence,
+    WorkingState,
+)
 from athena.runtime.tools import ToolDeclaration
 
 from .layer import MemoryLayer
@@ -20,10 +28,12 @@ class FourLayerRuntimeContextCompiler:
         memory: MemoryLayer | None = None,
         model_window_tokens: int = 16_384,
         safety_margin_tokens: int = 1_024,
+        token_meter: TokenMeter | None = None,
     ) -> None:
         if model_window_tokens <= 0 or safety_margin_tokens < 0:
             raise ValueError("context limits must be non-negative and non-zero")
-        self._memory = memory or MemoryLayer()
+        self._token_meter = token_meter or TokenMeter()
+        self._memory = memory or MemoryLayer(token_meter=self._token_meter)
         self._model_window_tokens = model_window_tokens
         self._safety_margin_tokens = safety_margin_tokens
 
@@ -36,6 +46,7 @@ class FourLayerRuntimeContextCompiler:
         events: tuple[Event, ...],
         evidence: tuple[Evidence, ...],
         tools: tuple[ToolDeclaration, ...],
+        tenant_id: str = "default",
     ) -> ContextSnapshot:
         checkpoint = MemoryCheckpoint(
             tick_sequence=tick_sequence,
@@ -57,34 +68,37 @@ class FourLayerRuntimeContextCompiler:
                 output_reserve_tokens=task.budget.output_reserve_tokens,
                 safety_margin_tokens=self._safety_margin_tokens,
             ),
+            tenant_id=tenant_id,
         )
         tool_schemas = tuple(
             {
-                    "name": item.name,
-                    "description": item.description,
-                    "input_schema": item.input_schema,
-                    "readonly": item.readonly,
-                }
-                for item in tools[:3]
-        )
-        # The compatibility projection is deliberately outside MemoryLayer:
-        # direct memory consumers keep the stable four-layer schema, while the
-        # legacy Demo engine and Runtime Console can migrate incrementally.
-        payload = dict(snapshot.payload)
-        payload.update(
-            {
-                "working_state": {
-                    "plan": list(working_state.plan),
-                    "pending_items": list(working_state.pending_items),
-                    "evidence_ids": list(working_state.evidence_ids),
-                    "running_summary": working_state.running_summary,
-                    "human_input": working_state.human_input,
-                },
-                "evidence": list(payload.get("evidence_memory", [])),
-                "selected_tool_schemas": list(tool_schemas),
+                "name": item.name,
+                "description": item.description,
+                "input_schema": item.input_schema,
+                "readonly": item.readonly,
             }
+            for item in tools[:3]
         )
-        return replace(snapshot, payload=payload, tool_schemas=tool_schemas)
+        payload = dict(snapshot.payload)
+        working_memory = dict(payload["working_memory"])
+        working_memory["completed_tool_calls"] = self._completed_tool_calls(events)
+        payload["working_memory"] = working_memory
+        # Tool declarations are server-owned metadata, not a memory layer, but
+        # they are still part of the model-visible request and must be included
+        # in the input-token estimate used by budgets and Replay A/B.
+        serialized = json.dumps(
+            {"memory": payload, "tool_schemas": list(tool_schemas)},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        estimated_input_tokens = max(1, self._token_meter.count(serialized))
+        return replace(
+            snapshot,
+            payload=payload,
+            estimated_input_tokens=estimated_input_tokens,
+            tool_schemas=tool_schemas,
+        )
 
     @staticmethod
     def _summary(state: WorkingState, events: tuple[Event, ...]) -> RunningSummary:
@@ -115,4 +129,20 @@ class FourLayerRuntimeContextCompiler:
                 )
             elif event.kind in {"tool.succeeded", "tool.rejected"}:
                 completed.add(event.tick_id)
-        return tuple(pair for call_id, pair in calls.items() if call_id not in completed)
+        return tuple(
+            pair for call_id, pair in calls.items() if call_id not in completed
+        )
+
+    @staticmethod
+    def _completed_tool_calls(events: tuple[Event, ...]) -> list[dict[str, str]]:
+        """Keep successful tool progress without replaying Artifact bodies."""
+
+        return [
+            {
+                "tool_name": str(event.payload.get("tool_name", "tool")),
+                "evidence_id": str(event.payload.get("evidence_id", "")),
+                "status": "succeeded",
+            }
+            for event in events
+            if event.kind == "tool.succeeded"
+        ][-8:]

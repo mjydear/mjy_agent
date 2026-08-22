@@ -6,7 +6,6 @@ import hashlib
 import json
 from dataclasses import dataclass
 
-from athena.agent.workflow.pod_pending import PodPendingDiagnosisWorkflow
 from athena.api.repositories.skill_repository import SkillVersion
 
 
@@ -110,11 +109,19 @@ class SkillReplayEvaluator:
 
     @staticmethod
     def _predict_root_cause(case: SkillReplayCase) -> str | None:
-        if case.workflow_type == "pod_pending":
-            return PodPendingDiagnosisWorkflow._root_cause_from_events(
-                list(case.event_reasons)
-            )
-        return None
+        # Replay uses a deliberately small, domain-neutral evidence reducer.
+        # A production adapter can provide richer case-specific oracles without
+        # coupling the Runtime to one backend domain.
+        reason_text = " ".join(case.event_reasons).casefold()
+        for marker, root_cause in (
+            ("dependency", "dependency_unavailable"),
+            ("timeout", "request_timeout"),
+            ("schema", "schema_mismatch"),
+            ("permission", "permission_denied"),
+        ):
+            if marker in reason_text:
+                return root_cause
+        return case.event_reasons[0] if len(case.event_reasons) == 1 else None
 
     @staticmethod
     def _report_id(

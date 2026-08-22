@@ -239,39 +239,43 @@ class LLMDecisionEngine:
 
         payload = context.payload
         task = payload.get("task", {})
-        working_state = payload.get("working_state", payload.get("working_memory", {}))
+        working_state = payload.get("working_memory", {})
         running_summary = payload.get("running_summary", {})
-        evidence = payload.get("evidence", payload.get("evidence_memory", []))
-        schemas = context.tool_schemas or tuple(payload.get("selected_tool_schemas", []))
+        evidence = payload.get("evidence_memory", [])
+        schemas = context.tool_schemas
         return {
             "task": {
                 "goal": task.get("goal", ""),
                 "budget_mode": task.get("budget_mode", "NORMAL"),
             },
-            "working_state": {
+            "working_memory": {
                 "plan": working_state.get("plan", []),
                 "pending_items": working_state.get("pending_items", []),
-                "evidence_ids": working_state.get("evidence_ids", []),
+                "pinned_evidence_ids": working_state.get("pinned_evidence_ids", []),
+                "completed_tool_calls": working_state.get("completed_tool_calls", []),
+                "unresolved_tool_pairs": working_state.get("unresolved_tool_pairs", []),
                 "running_summary": (
                     working_state.get("running_summary", running_summary)
                 ),
                 "human_input": working_state.get("human_input"),
             },
-            "evidence": evidence,
-            "selected_tool_schemas": list(schemas)[:3],
+            "evidence_memory": evidence,
+            "tool_schemas": list(schemas)[:3],
             "recent_events": payload.get("recent_events", []),
         }
 
     @staticmethod
     def _budget_mode(context: ContextSnapshot) -> str:
         task = context.payload.get("task", {})
-        value = task.get("budget_mode", "NORMAL") if isinstance(task, Mapping) else "NORMAL"
+        value = (
+            task.get("budget_mode", "NORMAL") if isinstance(task, Mapping) else "NORMAL"
+        )
         return value if isinstance(value, str) and value else "NORMAL"
 
     @staticmethod
     def _selected_tool_names(context: ContextSnapshot) -> frozenset[str]:
-        schemas = context.tool_schemas or context.payload.get("selected_tool_schemas", [])
-        if not isinstance(schemas, list):
+        schemas = context.tool_schemas
+        if not isinstance(schemas, (list, tuple)):
             return frozenset()
         return frozenset(
             item["name"]
@@ -315,7 +319,7 @@ class LLMDecisionEngine:
                     "kind": "fail",
                     "required": ["kind", "reason_code", "response"],
                 },
-            ]
+            ],
         }
 
     @staticmethod
@@ -361,7 +365,10 @@ class LLMDecisionEngine:
         repair_attempted: bool,
         fallback_reason: str | None,
     ) -> DecisionRoutingRecord:
-        actual_input = sum(self._usage_value(item.usage, "prompt_tokens", "input_tokens") for item in responses)
+        actual_input = sum(
+            self._usage_value(item.usage, "prompt_tokens", "input_tokens")
+            for item in responses
+        )
         actual_output = sum(
             self._usage_value(item.usage, "completion_tokens", "output_tokens")
             for item in responses
@@ -398,7 +405,7 @@ class LLMDecisionEngine:
             return asyncio.run(coroutine)
 
         # AgentRuntime is normally called by a worker thread.  This bridge
-        # keeps a synchronous Engine usable in a test or a legacy async caller
+        # keeps the synchronous Engine usable in tests and async worker contexts
         # without trying to nest ``asyncio.run`` in its active event loop.
         response: list[LLMResponse] = []
         error: list[BaseException] = []
@@ -496,5 +503,7 @@ def _is_json_value(value: Any) -> bool:
     if isinstance(value, list):
         return all(_is_json_value(item) for item in value)
     if isinstance(value, dict):
-        return all(isinstance(key, str) and _is_json_value(item) for key, item in value.items())
+        return all(
+            isinstance(key, str) and _is_json_value(item) for key, item in value.items()
+        )
     return False

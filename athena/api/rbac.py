@@ -13,7 +13,7 @@ from collections.abc import Callable
 from fastapi import Depends
 
 from athena.api.auth import TenantContext, require_tenant
-from athena.api.services import ApiServiceError
+from athena.api.errors import ApiServiceError
 
 
 def require_scope(scope: str) -> Callable[[TenantContext], TenantContext]:

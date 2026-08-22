@@ -1,6 +1,5 @@
 """Offline, inspectable core for the Athena Agent Runtime."""
 
-from .context import RuntimeContextCompiler
 from .engine import DecisionEngine, DemoDecisionEngine
 from .models import (
     AdvanceResult,
@@ -42,7 +41,6 @@ __all__ = [
     "InMemoryRuntimeStore",
     "LeaseConflictError",
     "ReadOnlyToolCatalog",
-    "RuntimeContextCompiler",
     "RuntimeSnapshot",
     "TaskBudget",
     "TaskNotFoundError",

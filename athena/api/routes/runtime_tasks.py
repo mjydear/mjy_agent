@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from athena.api.auth import TenantContext
 from athena.api.rbac import require_scope
 from athena.api.response import ApiResponse
-from athena.api.services import ApiServiceError
+from athena.api.errors import ApiServiceError
 from athena.application.runtime_task_service import RuntimeTaskService
 from athena.runtime import TaskNotFoundError
 
@@ -28,7 +28,9 @@ class RuntimeHumanInputRequest(BaseModel):
 def _service(request: Request) -> RuntimeTaskService:
     service = getattr(request.app.state, "runtime_task_service", None)
     if service is None:
-        raise ApiServiceError("RUNTIME_UNAVAILABLE", "Agent Runtime is unavailable", 503)
+        raise ApiServiceError(
+            "RUNTIME_UNAVAILABLE", "Agent Runtime is unavailable", 503
+        )
     return service
 
 
@@ -50,7 +52,9 @@ async def create_task(
         )
     except ValueError as exc:
         code = str(exc)
-        raise ApiServiceError(code, "repository path or task profile is invalid", 422) from exc
+        raise ApiServiceError(
+            code, "repository path or task profile is invalid", 422
+        ) from exc
     return ApiResponse.ok(result)
 
 
@@ -74,14 +78,15 @@ async def get_task(
         raise _not_found() from exc
     return ApiResponse.ok(result)
 
+
 @router.post("/{task_id}/run")
 async def run_task(
     task_id: str,
     request: Request,
-    _: TenantContext = Depends(require_scope("runtime:run")),
+    tenant: TenantContext = Depends(require_scope("runtime:run")),
 ) -> ApiResponse[dict[str, object]]:
     try:
-        result = _service(request).run(task_id)
+        result = _service(request).run(task_id, tenant_id=tenant.tenant_id)
     except TaskNotFoundError as exc:
         raise _not_found() from exc
     return ApiResponse.ok(result)
@@ -92,10 +97,12 @@ async def supply_human_input(
     task_id: str,
     payload: RuntimeHumanInputRequest,
     request: Request,
-    _: TenantContext = Depends(require_scope("runtime:run")),
+    tenant: TenantContext = Depends(require_scope("runtime:run")),
 ) -> ApiResponse[dict[str, object]]:
     try:
-        result = _service(request).supply_human_input(task_id, payload.input)
+        result = _service(request).supply_human_input(
+            task_id, payload.input, tenant_id=tenant.tenant_id
+        )
     except TaskNotFoundError as exc:
         raise _not_found() from exc
     except ValueError as exc:

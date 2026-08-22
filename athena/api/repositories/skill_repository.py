@@ -351,7 +351,7 @@ class SkillRepository:
         if set(manifest_capabilities) != set(capabilities):
             raise ValueError("skill manifest capabilities must match definition")
         if any(not capability.endswith(".read") for capability in capabilities):
-            raise ValueError("skill capabilities must be readonly in V1")
+            raise ValueError("skill capabilities must be readonly in Runtime")
         if manifest.get("creates_tool") or manifest.get("script"):
             raise ValueError("skill manifest cannot create tools or scripts")
 

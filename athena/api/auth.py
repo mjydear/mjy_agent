@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 from fastapi import Depends, Request
 
-from athena.api.services import ApiServiceError
+from athena.api.errors import ApiServiceError
 
 API_KEY_HEADER = "X-API-Key"
 _logger = logging.getLogger(__name__)

@@ -5,14 +5,24 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Protocol
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from athena.api.repositories.models import Base
+from athena.learning.skill_validation import SKILL_CANDIDATE_SCHEMA_VERSION
 
 CANDIDATE_STATUS = "candidate"
 REPLAY_PENDING_STATUS = "replay_pending"
@@ -50,6 +60,27 @@ class SkillCandidateProposal:
     feedback_id: str
     evidence_ids: tuple[str, ...]
     created_by: str
+
+
+@dataclass(frozen=True)
+class TrajectorySkillCandidateProposal:
+    """Human-authored structured Candidate sourced only from eligible trajectories."""
+
+    tenant_id: str
+    name: str
+    description: str
+    trigger: dict[str, object]
+    allowed_tools: tuple[str, ...]
+    procedure: tuple[str, ...]
+    failure_recovery: tuple[str, ...]
+    success_contract: dict[str, object]
+    evidence_requirements: tuple[str, ...]
+    token_budget_hint: int
+    source_trajectory_ids: tuple[str, ...]
+    created_by: str
+    version: int = 1
+    risk_level: str = "S1"
+    skill_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -115,6 +146,20 @@ class SkillCandidate:
     source_digest: str
     source_summary: dict[str, object]
     created_by: str
+    schema_version: str = SKILL_CANDIDATE_SCHEMA_VERSION
+    skill_id: str = ""
+    version: int = 1
+    description: str = ""
+    trigger: dict[str, object] | None = None
+    allowed_tools: tuple[str, ...] = ()
+    failure_recovery: tuple[str, ...] = ()
+    success_contract: dict[str, object] | None = None
+    evidence_requirements: tuple[str, ...] = ()
+    token_budget_hint: int = 0
+    source_trajectory_ids: tuple[str, ...] = ()
+    evaluation_status: str = "not_evaluated"
+    risk_level: str = "S1"
+    audit_events: tuple[dict[str, object], ...] = field(default=(), compare=False)
     replay_report_id: str | None = None
     shadow_report_id: str | None = None
     reviewed_by: str | None = None
@@ -156,6 +201,11 @@ class SkillCandidateModel(Base):
         UniqueConstraint(
             "tenant_id", "source_digest", name="uq_skill_candidate_source"
         ),
+        CheckConstraint(
+            "status IN ('candidate', 'replay_pending', 'shadow', "
+            "'review_pending', 'rejected')",
+            name="ck_skill_candidate_not_active",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(96), primary_key=True)
@@ -173,6 +223,24 @@ class SkillCandidateModel(Base):
     source_digest: Mapped[str] = mapped_column(String(128), index=True)
     source_summary_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     created_by: Mapped[str] = mapped_column(String(160))
+    schema_version: Mapped[str] = mapped_column(
+        String(64), default=SKILL_CANDIDATE_SCHEMA_VERSION
+    )
+    skill_id: Mapped[str] = mapped_column(String(96), index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    description: Mapped[str] = mapped_column(Text, default="")
+    trigger_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    allowed_tools_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    failure_recovery_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    success_contract_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    evidence_requirements_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    token_budget_hint: Mapped[int] = mapped_column(Integer, default=0)
+    source_trajectory_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    evaluation_status: Mapped[str] = mapped_column(
+        String(32), default="not_evaluated", index=True
+    )
+    risk_level: Mapped[str] = mapped_column(String(16), default="S1")
+    audit_events_json: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
     replay_report_id: Mapped[str | None] = mapped_column(
         String(160), nullable=True
     )
@@ -235,6 +303,23 @@ def source_digest(
     return hashlib.sha256(encoded).hexdigest()
 
 
+def trajectory_source_digest(
+    tenant_id: str, source_trajectory_ids: tuple[str, ...]
+) -> str:
+    """Build a stable deduplication key for an eligible trajectory set."""
+
+    encoded = json.dumps(
+        {
+            "tenant_id": tenant_id,
+            "source_trajectory_ids": sorted(source_trajectory_ids),
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def utc_or_none(value: datetime | None) -> datetime | None:
     """Return database timestamps in a consistent UTC representation."""
 
@@ -258,10 +343,12 @@ __all__ = [
     "SkillCandidateModel",
     "SkillCandidateProposal",
     "SkillCandidateSourceError",
+    "TrajectorySkillCandidateProposal",
     "VerifiedEvidenceSummary",
     "VerifiedLearningSource",
     "VerifiedLearningSourceResolver",
     "normalize_safe_summary",
     "source_digest",
+    "trajectory_source_digest",
     "utc_or_none",
 ]

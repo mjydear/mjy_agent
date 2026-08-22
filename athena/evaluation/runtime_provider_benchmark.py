@@ -14,6 +14,7 @@ import json
 import re
 import statistics
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, Mapping
@@ -56,14 +57,26 @@ class RuntimeBenchmarkCase:
     expected_tool_names: tuple[str, ...]
     profile: TaskProfile = TaskProfile.STANDARD
     max_ticks: int | None = None
+    expected_task_status: str = "succeeded"
+    allowed_tool_names: tuple[str, ...] = ()
+    expected_rejection_codes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.case_id.strip() or not self.goal.strip():
             raise ValueError("case_id and goal must be non-empty")
         if len(self.tool_sequence) != len(self.tool_arguments):
             raise ValueError("tool_sequence and tool_arguments must have equal length")
-        if not self.expected_tool_names:
-            raise ValueError("expected_tool_names must not be empty")
+        if (
+            not self.expected_tool_names
+            and self.expected_task_status == TaskStatus.SUCCEEDED.value
+            and not self.expected_rejection_codes
+        ):
+            raise ValueError(
+                "successful benchmark cases must declare expected tools or an "
+                "explicit rejection oracle"
+            )
+        if not self.expected_task_status.strip():
+            raise ValueError("expected_task_status must be non-empty")
 
 
 @dataclass(frozen=True)
@@ -88,14 +101,21 @@ class ModelPrice:
     output_per_million: float = 0.0
     cached_input_per_million: float | None = None
 
-    def cost_usd(self, *, input_tokens: int, output_tokens: int, cached_tokens: int) -> float | None:
-        if min(
-            self.input_per_million,
-            self.output_per_million,
-            self.cached_input_per_million
-            if self.cached_input_per_million is not None
-            else 0.0,
-        ) < 0:
+    def cost_usd(
+        self, *, input_tokens: int, output_tokens: int, cached_tokens: int
+    ) -> float | None:
+        if (
+            min(
+                self.input_per_million,
+                self.output_per_million,
+                (
+                    self.cached_input_per_million
+                    if self.cached_input_per_million is not None
+                    else 0.0
+                ),
+            )
+            < 0
+        ):
             raise ValueError("model prices must be non-negative")
         if self.input_per_million == 0 and self.output_per_million == 0:
             return None
@@ -194,6 +214,8 @@ class RuntimeBenchmarkCell:
     strategy: str
     model: str
     status: str
+    task_status: str
+    expected_task_status: str
     success: bool
     tick_count: int
     repair_attempts: int
@@ -208,6 +230,8 @@ class RuntimeBenchmarkCell:
     routed_models: tuple[str, ...]
     latency_ms: float
     rounds: tuple[RuntimeRoundRecord, ...]
+    safety_violations: int = 0
+    failure_reason: str | None = None
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -217,6 +241,8 @@ class RuntimeBenchmarkCell:
             "strategy": self.strategy,
             "model": self.model,
             "status": self.status,
+            "task_status": self.task_status,
+            "expected_task_status": self.expected_task_status,
             "success": self.success,
             "tick_count": self.tick_count,
             "repair_attempts": self.repair_attempts,
@@ -231,6 +257,8 @@ class RuntimeBenchmarkCell:
             "routed_models": list(self.routed_models),
             "latency_ms": round(self.latency_ms, 3),
             "rounds": [round_item.to_dict() for round_item in self.rounds],
+            "safety_violations": self.safety_violations,
+            "failure_reason": self.failure_reason,
             "error": self.error,
         }
 
@@ -304,8 +332,16 @@ class _RecordingClient:
 class RuntimeProviderBenchmarkRunner:
     """Execute complete Runtime cells in a deterministic order."""
 
-    def __init__(self, *, prices: Mapping[str, ModelPrice] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        prices: Mapping[str, ModelPrice] | None = None,
+        catalog_factory: (
+            Callable[[RuntimeBenchmarkCase], ReadOnlyToolCatalog] | None
+        ) = None,
+    ) -> None:
         self._prices = dict(prices or {})
+        self._catalog_factory = catalog_factory or _catalog_for_case
 
     async def run(
         self,
@@ -345,9 +381,11 @@ class RuntimeProviderBenchmarkRunner:
         )
         rounds: list[RuntimeRoundRecord] = []
         try:
-            catalog = _catalog_for_case(case)
+            catalog = self._catalog_factory(case)
             compiler = _compiler_for_strategy(strategy)
-            engine = LLMDecisionEngine(ModelRouter(light, heavy), purpose="react_decision")
+            engine = LLMDecisionEngine(
+                ModelRouter(light, heavy), purpose="react_decision"
+            )
             store = InMemoryRuntimeStore()
             runtime = AgentRuntime(
                 store=store,
@@ -361,11 +399,15 @@ class RuntimeProviderBenchmarkRunner:
                 profile=case.profile,
             )
             if case.max_ticks is not None:
-                task = replace(task, budget=replace(task.budget, max_ticks=case.max_ticks))
+                task = replace(
+                    task, budget=replace(task.budget, max_ticks=case.max_ticks)
+                )
             store.create_task(task)
             lease_id = f"benchmark_{task.task_id}"
 
-            while not task.status.terminal and task.status is not TaskStatus.WAITING_HUMAN:
+            while (
+                not task.status.terminal and task.status is not TaskStatus.WAITING_HUMAN
+            ):
                 before = len(all_observations)
                 result = runtime.advance(task.task_id, lease_id)
                 new_calls = all_observations[before:]
@@ -386,20 +428,58 @@ class RuntimeProviderBenchmarkRunner:
             collected_tools = tuple(
                 event.payload.get("tool_name")
                 for event in snapshot.events
-                if event.kind == "tool.succeeded" and isinstance(event.payload.get("tool_name"), str)
+                if event.kind == "tool.succeeded"
+                and isinstance(event.payload.get("tool_name"), str)
             )
             evidence_ids = tuple(snapshot.working_state.evidence_ids)
             expected_tools = set(case.expected_tool_names)
-            evidence_retained = expected_tools.issubset(set(collected_tools)) and bool(evidence_ids)
+            evidence_retained = expected_tools.issubset(set(collected_tools)) and (
+                bool(evidence_ids) or not expected_tools
+            )
+            rejected_codes = tuple(
+                str(event.payload.get("reason_code") or "")
+                for event in snapshot.events
+                if event.kind == "tool.rejected"
+            )
+            expected_rejections_observed = set(case.expected_rejection_codes).issubset(
+                set(rejected_codes)
+            )
+            safety_violations = (
+                sum(
+                    tool_name not in set(case.allowed_tool_names)
+                    for tool_name in collected_tools
+                )
+                if case.allowed_tool_names
+                else 0
+            )
+            task_status_matches = task.status.value == case.expected_task_status
             all_calls = [call for round_item in rounds for call in round_item.calls]
             input_tokens = sum(call.input_tokens for call in all_calls)
             output_tokens = sum(call.output_tokens for call in all_calls)
             cached_tokens = sum(call.cached_tokens for call in all_calls)
             total_tokens = sum(call.total_tokens for call in all_calls)
             cost = _cost_for_calls(all_calls, self._prices)
-            success = task.status is TaskStatus.SUCCEEDED and evidence_retained
-            status = "succeeded" if success else task.status.value
-            if task.status is TaskStatus.SUCCEEDED and not evidence_retained:
+            success = (
+                task_status_matches
+                and evidence_retained
+                and expected_rejections_observed
+                and safety_violations == 0
+            )
+            status = (
+                "succeeded"
+                if task.status is TaskStatus.SUCCEEDED
+                else task.status.value
+            )
+            failure_reason = None
+            if not task_status_matches:
+                failure_reason = "TASK_STATUS_MISMATCH"
+            elif not evidence_retained:
+                failure_reason = "EVIDENCE_NOT_RETAINED"
+            elif not expected_rejections_observed:
+                failure_reason = "EXPECTED_REJECTION_MISSING"
+            elif safety_violations:
+                failure_reason = "SAFETY_VIOLATION"
+            if task.status is TaskStatus.SUCCEEDED and not success:
                 status = "quality_failed"
             return RuntimeBenchmarkCell(
                 cell_id=_cell_id(case.case_id, strategy, model_pair.label),
@@ -407,6 +487,8 @@ class RuntimeProviderBenchmarkRunner:
                 strategy=strategy.value,
                 model=model_pair.label,
                 status=status,
+                task_status=task.status.value,
+                expected_task_status=case.expected_task_status,
                 success=success,
                 tick_count=len(rounds),
                 repair_attempts=sum(item.repair_attempts for item in rounds),
@@ -421,15 +503,22 @@ class RuntimeProviderBenchmarkRunner:
                 routed_models=tuple(dict.fromkeys(call.model for call in all_calls)),
                 latency_ms=(time.perf_counter() - started) * 1000,
                 rounds=tuple(rounds),
+                safety_violations=safety_violations,
+                failure_reason=failure_reason,
             )
         except Exception as exc:  # one bad cell must not discard the experiment
-            all_calls = [_call_record(index, observation) for index, observation in enumerate(all_observations, start=1)]
+            all_calls = [
+                _call_record(index, observation)
+                for index, observation in enumerate(all_observations, start=1)
+            ]
             return RuntimeBenchmarkCell(
                 cell_id=_cell_id(case.case_id, strategy, model_pair.label),
                 case_id=case.case_id,
                 strategy=strategy.value,
                 model=model_pair.label,
                 status="benchmark_failed",
+                task_status="benchmark_failed",
+                expected_task_status=case.expected_task_status,
                 success=False,
                 tick_count=len(rounds),
                 repair_attempts=sum(item.repair_attempts for item in rounds),
@@ -444,6 +533,7 @@ class RuntimeProviderBenchmarkRunner:
                 routed_models=tuple(dict.fromkeys(item.model for item in all_calls)),
                 latency_ms=(time.perf_counter() - started) * 1000,
                 rounds=tuple(rounds),
+                failure_reason="BENCHMARK_EXCEPTION",
                 error=type(exc).__name__,
             )
 
@@ -503,7 +593,9 @@ class DryRunDecisionClient:
         )
 
 
-def summarize_runtime_cells(cells: tuple[RuntimeBenchmarkCell, ...]) -> list[dict[str, Any]]:
+def summarize_runtime_cells(
+    cells: tuple[RuntimeBenchmarkCell, ...],
+) -> list[dict[str, Any]]:
     """Aggregate cells while retaining model-pair and strategy identity."""
 
     groups: dict[tuple[str, str], list[RuntimeBenchmarkCell]] = {}
@@ -518,13 +610,28 @@ def summarize_runtime_cells(cells: tuple[RuntimeBenchmarkCell, ...]) -> list[dic
                 "strategy": strategy,
                 "cases": len(items),
                 "success_rate": _rate(item.success for item in items),
-                "evidence_retention_rate": _rate(item.evidence_retained for item in items),
-                "avg_tick_count": round(statistics.mean(item.tick_count for item in items), 2),
+                "evidence_retention_rate": _rate(
+                    item.evidence_retained for item in items
+                ),
+                "safety_violations_total": sum(
+                    item.safety_violations for item in items
+                ),
+                "avg_tick_count": round(
+                    statistics.mean(item.tick_count for item in items), 2
+                ),
                 "repair_attempts_total": sum(item.repair_attempts for item in items),
-                "input_tokens_avg": round(statistics.mean(item.input_tokens for item in items), 2),
-                "output_tokens_avg": round(statistics.mean(item.output_tokens for item in items), 2),
-                "cached_tokens_avg": round(statistics.mean(item.cached_tokens for item in items), 2),
-                "total_tokens_avg": round(statistics.mean(item.total_tokens for item in items), 2),
+                "input_tokens_avg": round(
+                    statistics.mean(item.input_tokens for item in items), 2
+                ),
+                "output_tokens_avg": round(
+                    statistics.mean(item.output_tokens for item in items), 2
+                ),
+                "cached_tokens_avg": round(
+                    statistics.mean(item.cached_tokens for item in items), 2
+                ),
+                "total_tokens_avg": round(
+                    statistics.mean(item.total_tokens for item in items), 2
+                ),
                 "cost_usd_total": _sum_optional(item.cost_usd for item in items),
                 "latency_ms_p50": round(_percentile(latencies, 0.50), 3),
                 "latency_ms_p95": round(_percentile(latencies, 0.95), 3),
@@ -540,7 +647,7 @@ def _compiler_for_strategy(strategy: RuntimeContextStrategy) -> Any:
 
 
 class _FourLayerBenchmarkCompiler:
-    """Use the production compiler with the parser compatibility projection."""
+    """Use the production four-layer compiler directly."""
 
     def __init__(self) -> None:
         self._delegate = FourLayerRuntimeContextCompiler(
@@ -549,8 +656,7 @@ class _FourLayerBenchmarkCompiler:
         )
 
     def compile(self, **kwargs: Any) -> ContextSnapshot:
-        snapshot = self._delegate.compile(**kwargs)
-        return replace(snapshot, tool_schemas=())
+        return self._delegate.compile(**kwargs)
 
 
 class _ComparisonContextCompiler:
@@ -560,7 +666,9 @@ class _ComparisonContextCompiler:
         self._strategy = strategy
         self._meter = TokenMeter()
 
-    def compile(self, *, task, tick_sequence, working_state, events, evidence, tools):
+    def compile(
+        self, *, task, tick_sequence, working_state, events, evidence, tools, tenant_id="default"
+    ):
         event_payloads = [
             {"kind": event.kind, "payload": event.payload} for event in events
         ]
@@ -586,15 +694,14 @@ class _ComparisonContextCompiler:
                 "profile": task.profile.value,
                 "budget_mode": task.budget.mode,
             },
-            "working_state": {
+            "working_memory": {
                 "plan": list(working_state.plan),
                 "pending_items": list(working_state.pending_items),
                 "evidence_ids": list(working_state.evidence_ids),
                 "running_summary": working_state.running_summary,
                 "human_input": working_state.human_input,
             },
-            "evidence": evidence_payload,
-            "selected_tool_schemas": [_tool_schema(item) for item in tools[:3]],
+            "evidence_memory": evidence_payload,
             "recent_events": selected_events,
         }
         if self._strategy is RuntimeContextStrategy.SUMMARY_WINDOW:
@@ -603,26 +710,33 @@ class _ComparisonContextCompiler:
                 "omitted_event_count": max(0, len(events) - len(selected_events)),
                 "running_summary": working_state.running_summary,
             }
-        estimated = max(1, self._meter.count(json.dumps(payload, ensure_ascii=False, sort_keys=True)))
+        estimated = max(
+            1,
+            self._meter.count(json.dumps(payload, ensure_ascii=False, sort_keys=True)),
+        )
         return ContextSnapshot(
             task_id=task.task_id,
             tick_sequence=tick_sequence,
             payload=payload,
             estimated_input_tokens=estimated,
-            input_budget_tokens=max(0, 16_384 - task.budget.output_reserve_tokens - 1_024),
+            input_budget_tokens=max(
+                0, 16_384 - task.budget.output_reserve_tokens - 1_024
+            ),
             output_reserve_tokens=task.budget.output_reserve_tokens,
-            compacted=self._strategy is not RuntimeContextStrategy.FULL_HISTORY and len(selected_events) < len(events),
+            compacted=self._strategy is not RuntimeContextStrategy.FULL_HISTORY
+            and len(selected_events) < len(events),
             omitted_event_count=max(0, len(events) - len(selected_events)),
             compaction_count=working_state.compaction_count,
-            # LLMDecisionEngine's V1 parser reads the model-visible list from
-            # payload.  Keep the optional compatibility tuple empty here so
-            # the parser does not mistake the tuple for an unavailable tool.
-            tool_schemas=(),
+            tool_schemas=tuple(_tool_schema(item) for item in tools[:3]),
         )
 
 
-def _round_record(*, result, routing, calls: list[_CallObservation]) -> RuntimeRoundRecord:
-    call_records = tuple(_call_record(index, call) for index, call in enumerate(calls, start=1))
+def _round_record(
+    *, result, routing, calls: list[_CallObservation]
+) -> RuntimeRoundRecord:
+    call_records = tuple(
+        _call_record(index, call) for index, call in enumerate(calls, start=1)
+    )
     return RuntimeRoundRecord(
         tick=result.tick.sequence,
         status=result.tick.status.value,
@@ -630,7 +744,9 @@ def _round_record(*, result, routing, calls: list[_CallObservation]) -> RuntimeR
         reason_code=result.tick.decision.reason_code,
         selected_tier=getattr(routing, "selected_tier", None),
         preferred_tier=getattr(routing, "preferred_tier", None),
-        routed_model=(call_records[-1].model if call_records else getattr(routing, "model", None)),
+        routed_model=(
+            call_records[-1].model if call_records else getattr(routing, "model", None)
+        ),
         route_reason=getattr(routing, "route_reason", None),
         complexity_score=getattr(routing, "complexity_score", None),
         repair_attempts=int(bool(getattr(routing, "repair_attempted", False))),
@@ -661,8 +777,17 @@ def _call_record(index: int, observation: _CallObservation) -> RuntimeCallRecord
 def _catalog_for_case(case: RuntimeBenchmarkCase) -> ReadOnlyToolCatalog:
     default = ReadOnlyToolCatalog()
     by_name = {item.name: item for item in default.declarations}
+    for name in case.tool_sequence:
+        if name not in by_name:
+            by_name[name] = ToolDeclaration(
+                name=name,
+                description="A benchmark-only read-only tool placeholder.",
+                input_schema={"type": "object", "additionalProperties": True},
+            )
     ordered_names = list(dict.fromkeys((*case.tool_sequence, *by_name)))
-    return ReadOnlyToolCatalog(tuple(by_name[name] for name in ordered_names if name in by_name))
+    return ReadOnlyToolCatalog(
+        tuple(by_name[name] for name in ordered_names if name in by_name)
+    )
 
 
 def _bind_client(client: LLMClient, case: RuntimeBenchmarkCase) -> LLMClient:
@@ -680,8 +805,12 @@ def _tool_schema(item: ToolDeclaration) -> dict[str, Any]:
 
 
 def _payload_evidence(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    value = payload.get("evidence", payload.get("evidence_memory", []))
-    return [item for item in value if isinstance(item, Mapping)] if isinstance(value, list) else []
+    value = payload.get("evidence_memory", [])
+    return (
+        [item for item in value if isinstance(item, Mapping)]
+        if isinstance(value, list)
+        else []
+    )
 
 
 def _normalize_usage(usage: Any) -> dict[str, int]:
@@ -738,7 +867,9 @@ def _first_int(data: Mapping[str, Any], *names: str) -> int:
     return 0
 
 
-def _cost_for_calls(calls: list[RuntimeCallRecord], prices: Mapping[str, ModelPrice]) -> float | None:
+def _cost_for_calls(
+    calls: list[RuntimeCallRecord], prices: Mapping[str, ModelPrice]
+) -> float | None:
     values: list[float] = []
     for call in calls:
         price = prices.get(call.model)
@@ -761,7 +892,9 @@ def _cell_id(case_id: str, strategy: RuntimeContextStrategy, model: str) -> str:
 
 def _rate(values) -> float:
     values = list(values)
-    return round(sum(bool(value) for value in values) / len(values), 4) if values else 0.0
+    return (
+        round(sum(bool(value) for value in values) / len(values), 4) if values else 0.0
+    )
 
 
 def _sum_optional(values) -> float | None:

@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from athena.api.auth import TenantContext
 from athena.api.rbac import require_scope
 from athena.api.response import ApiResponse
-from athena.api.services import ApiServiceError
+from athena.api.errors import ApiServiceError
 from athena.application.runtime_learning_service import RuntimeLearningService
 from athena.runtime.learning import RuntimeSkillLearningError
 from athena.runtime.store import TaskNotFoundError
@@ -42,7 +42,12 @@ def _service(request: Request) -> RuntimeLearningService:
 
 
 def _learning_error(exc: RuntimeSkillLearningError) -> ApiServiceError:
-    status = 404 if exc.error_code == "RUNTIME_SKILL_CANDIDATE_NOT_FOUND" else 409
+    status = (
+        404
+        if exc.error_code
+        in {"RUNTIME_SKILL_CANDIDATE_NOT_FOUND", "RUNTIME_TRAJECTORY_NOT_FOUND"}
+        else 409
+    )
     return ApiServiceError(exc.error_code, "Skill candidate lifecycle operation was rejected", status)
 
 
@@ -66,15 +71,53 @@ async def get_candidate(
         raise _learning_error(exc) from exc
 
 
+@router.post("/tasks/{task_id}/trajectory")
+async def capture_trajectory(
+    task_id: str,
+    request: Request,
+    tenant: TenantContext = Depends(require_scope("runtime:learn")),
+) -> ApiResponse[dict[str, object]]:
+    try:
+        return ApiResponse.ok(
+            await _service(request).capture_trajectory(
+                task_id, tenant_id=tenant.tenant_id
+            )
+        )
+    except TaskNotFoundError as exc:
+        raise ApiServiceError(
+            "RUNTIME_TASK_NOT_FOUND", "Runtime task was not found", 404
+        ) from exc
+
+
+@router.get("/trajectories/{trajectory_id}")
+async def get_trajectory(
+    trajectory_id: str,
+    request: Request,
+    tenant: TenantContext = Depends(require_scope("runtime:read")),
+) -> ApiResponse[dict[str, object]]:
+    try:
+        return ApiResponse.ok(
+            await _service(request).trajectory(
+                trajectory_id, tenant_id=tenant.tenant_id
+            )
+        )
+    except RuntimeSkillLearningError as exc:
+        raise _learning_error(exc) from exc
+
+
 @router.post("/tasks/{task_id}/feedback")
 async def observe_feedback(
     task_id: str,
     payload: RuntimeFeedbackRequest,
     request: Request,
-    _: TenantContext = Depends(require_scope("runtime:learn")),
+    tenant: TenantContext = Depends(require_scope("runtime:learn")),
 ) -> ApiResponse[dict[str, object]]:
     try:
-        result = _service(request).observe(task_id, **payload.model_dump())
+        result = await _service(request).observe(
+            task_id,
+            tenant_id=tenant.tenant_id,
+            **payload.model_dump(),
+        )
     except TaskNotFoundError as exc:
         raise ApiServiceError("RUNTIME_TASK_NOT_FOUND", "Runtime task was not found", 404) from exc
     except RuntimeSkillLearningError as exc:

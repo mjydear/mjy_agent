@@ -32,6 +32,14 @@ from .models import (
     ShadowResult,
     SkillCandidateHandoff,
 )
+from .trajectory import (
+    TRAJECTORY_SCHEMA_VERSION,
+    TrajectoryAdmission,
+    TrajectoryRejectionReason,
+    TrajectoryStatus,
+    TrajectorySummary,
+    TrajectorySummaryBuilder,
+)
 
 __all__ = [
     "CANDIDATE_STATUS",
@@ -59,5 +67,11 @@ __all__ = [
     "ShadowReport",
     "ShadowResult",
     "SkillCandidateHandoff",
+    "TRAJECTORY_SCHEMA_VERSION",
+    "TrajectoryAdmission",
+    "TrajectoryRejectionReason",
+    "TrajectoryStatus",
+    "TrajectorySummary",
+    "TrajectorySummaryBuilder",
     "redact_summary",
 ]

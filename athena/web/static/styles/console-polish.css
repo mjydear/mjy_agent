@@ -1,0 +1,530 @@
+:root {
+  --ink: #172329;
+  --muted: #6d7b80;
+  --subtle: #a4b0b3;
+  --line: #dce3e2;
+  --line-strong: #c7d1d0;
+  --paper: #fbfcfb;
+  --panel: #ffffff;
+  --wash: #f2f5f4;
+  --teal: #087f74;
+  --teal-dark: #075e56;
+  --teal-wash: #e0f4ef;
+  --blue: #2563a6;
+  --blue-wash: #eaf2fb;
+  --amber: #a76500;
+  --amber-wash: #fff3dc;
+  --red: #ad3c31;
+  --red-wash: #fff0ee;
+  --shadow: 0 12px 32px rgba(28, 47, 49, 0.08);
+}
+
+html,
+body {
+  min-width: 320px;
+  min-height: 100%;
+  margin: 0;
+  background: var(--wash);
+  color: var(--ink);
+}
+
+body {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.runtime-console {
+  min-height: 100vh;
+  background: var(--wash);
+  color: var(--ink);
+}
+
+.runtime-console__grid,
+.runtime-console__skill-layout {
+  width: min(1680px, 100%);
+  min-height: calc(100vh - 32px);
+  margin: 16px auto 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px 10px 0 0;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.runtime-console__grid {
+  grid-template-columns: 248px minmax(520px, 1fr) 306px;
+}
+
+.runtime-console__sidebar {
+  background: #f7f9f8;
+  border-right-color: var(--line);
+}
+
+.runtime-console__sidebar-heading {
+  min-height: 78px;
+  padding: 18px 18px 14px;
+  background: var(--panel);
+  border-bottom-color: var(--line);
+}
+
+.runtime-console__eyebrow {
+  color: var(--teal);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.runtime-console__sidebar h1 {
+  margin-top: 3px;
+  color: var(--ink);
+  font-size: 19px;
+  letter-spacing: -0.01em;
+}
+
+.runtime-console__navigation {
+  background: var(--panel);
+  border-bottom-color: var(--line);
+}
+
+.runtime-console__navigation span,
+.runtime-console__navigation-button {
+  padding: 11px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.01em;
+}
+
+.runtime-console__navigation .is-active,
+.runtime-console__navigation-button.is-active {
+  border-bottom-color: var(--teal);
+  color: var(--teal-dark);
+}
+
+.runtime-console__skill-launcher {
+  margin: 14px 14px 12px;
+  border-color: #9bd8cf;
+  border-radius: 6px;
+  background: var(--teal-wash);
+  padding: 10px 12px;
+  color: var(--teal-dark);
+  font-size: 12px;
+}
+
+.runtime-console__sidebar-section {
+  padding: 8px 12px 16px;
+}
+
+.runtime-console__section-heading h2 {
+  color: var(--ink);
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+
+.runtime-console__task-list {
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.runtime-console__task {
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 12px;
+}
+
+.runtime-console__task:hover {
+  background: #edf5f2;
+}
+
+.runtime-console__task.is-selected {
+  border-color: #9bd8cf;
+  background: var(--teal-wash);
+  box-shadow: inset 3px 0 0 var(--teal);
+}
+
+.runtime-console__task-title {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.runtime-console__task-meta {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.runtime-console__workspace {
+  background: var(--panel);
+}
+
+.runtime-console__workspace-header,
+.runtime-console__skill-header {
+  min-height: 108px;
+  padding: 22px 26px;
+  background: var(--panel);
+  border-bottom-color: var(--line);
+}
+
+.runtime-console__goal h2,
+.runtime-console__skill-header h1 {
+  margin: 6px 0 5px;
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 760;
+  letter-spacing: -0.02em;
+}
+
+.runtime-console__task-id {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.runtime-console__workspace-actions {
+  gap: 7px;
+}
+
+.runtime-console__status {
+  min-height: 25px;
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 10px;
+}
+
+.runtime-console__status--success {
+  border-color: #9bd8cf;
+  background: var(--teal-wash);
+  color: var(--teal-dark);
+}
+
+.runtime-console__status--progress {
+  border-color: #efd08e;
+  background: var(--amber-wash);
+  color: var(--amber);
+}
+
+.runtime-console__status--danger {
+  border-color: #efb5ae;
+  background: var(--red-wash);
+  color: var(--red);
+}
+
+.runtime-console__button {
+  min-height: 33px;
+  border-color: var(--line-strong);
+  border-radius: 6px;
+  padding: 7px 12px;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 11px;
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+
+.runtime-console__button:hover {
+  border-color: #9bb0ad;
+  background: #f3f7f6;
+  transform: translateY(-1px);
+}
+
+.runtime-console__button--primary {
+  border-color: var(--teal);
+  background: var(--teal);
+  color: white;
+}
+
+.runtime-console__button--primary:hover {
+  border-color: var(--teal-dark);
+  background: var(--teal-dark);
+}
+
+.runtime-console__button--danger {
+  border-color: #e1aaa3;
+  color: var(--red);
+}
+
+.runtime-console__timeline-panel,
+.runtime-console__report {
+  padding: 24px 26px;
+}
+
+.runtime-console__timeline-panel {
+  min-height: 400px;
+}
+
+.runtime-console__timeline {
+  margin-top: 22px;
+}
+
+.runtime-console__timeline-entry {
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 12px;
+  padding-bottom: 20px;
+}
+
+.runtime-console__timeline-entry:not(:last-child)::before {
+  left: 7px;
+  background: #c8d9d5;
+}
+
+.runtime-console__timeline-marker {
+  width: 15px;
+  height: 15px;
+  border-color: var(--panel);
+  background: var(--teal);
+  box-shadow: 0 0 0 1px #80bdb4, 0 2px 5px rgba(8, 127, 116, 0.2);
+}
+
+.runtime-console__timeline-copy {
+  padding: 0 0 1px;
+}
+
+.runtime-console__timeline-title strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.runtime-console__timeline-title time {
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+.runtime-console__timeline-copy > p {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.runtime-console__inspector {
+  background: #f8faf9;
+  border-left-color: var(--line);
+}
+
+.runtime-console__tabs {
+  background: var(--panel);
+  border-bottom-color: var(--line);
+}
+
+.runtime-console__tab {
+  min-height: 48px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.runtime-console__tab.is-active {
+  border-bottom-color: var(--teal);
+  color: var(--teal-dark);
+}
+
+.runtime-console__inspector-body {
+  padding: 20px 18px;
+}
+
+.runtime-console__empty {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  padding: 18px;
+}
+
+.runtime-console__empty h2 {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.runtime-console__empty p {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.runtime-console__facts > div,
+.runtime-console__evidence-list li,
+.runtime-console__usage-list li {
+  border-bottom-color: var(--line);
+  padding: 11px 0;
+}
+
+.runtime-console__facts dt,
+.runtime-console__evidence-list span,
+.runtime-console__usage-list span,
+.runtime-console__usage-list small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.runtime-console__facts dd,
+.runtime-console__evidence-list strong,
+.runtime-console__usage-list strong {
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.runtime-console__code,
+.runtime-console__event-data pre,
+.runtime-console__report-body,
+.runtime-console__skill-code {
+  border-color: var(--line);
+  border-radius: 6px;
+  background: #f4f7f6;
+  color: #294047;
+  font-size: 10px;
+}
+
+.runtime-console__usage-summary {
+  border-bottom-color: var(--line);
+}
+
+.runtime-console__usage-summary strong {
+  color: var(--teal-dark);
+  font-size: 24px;
+}
+
+.runtime-console__composer {
+  gap: 12px;
+  border-color: var(--line-strong);
+  background: #f7f9f8;
+  padding: 14px 16px;
+}
+
+.runtime-console__composer-field,
+.runtime-console__repository-field {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.runtime-console textarea,
+.runtime-console input,
+.runtime-console select {
+  border-color: var(--line-strong);
+  border-radius: 6px;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.runtime-console__skill-layout {
+  grid-template-columns: 270px minmax(0, 1fr);
+}
+
+.runtime-console__skill-sidebar {
+  background: #f7f9f8;
+  border-right-color: var(--line);
+}
+
+.runtime-console__skill-sidebar-heading {
+  padding: 22px 18px 18px;
+  background: var(--panel);
+  border-bottom-color: var(--line);
+}
+
+.runtime-console__skill-sidebar-heading h2 {
+  margin-top: 5px;
+  color: var(--ink);
+  font-size: 18px;
+}
+
+.runtime-console__skill-candidate {
+  border-color: transparent;
+  border-radius: 7px;
+  padding: 12px;
+}
+
+.runtime-console__skill-candidate:hover {
+  background: #edf5f2;
+}
+
+.runtime-console__skill-candidate.is-selected {
+  border-color: #9bd8cf;
+  background: var(--teal-wash);
+  box-shadow: inset 3px 0 0 var(--teal);
+}
+
+.runtime-console__skill-main {
+  background: var(--panel);
+}
+
+.runtime-console__skill-tabs {
+  gap: 4px;
+  padding: 0 26px;
+  background: var(--panel);
+  border-bottom-color: var(--line);
+}
+
+.runtime-console__skill-tab {
+  min-height: 45px;
+  border-bottom-width: 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.runtime-console__skill-tab.is-active {
+  border-bottom-color: var(--teal);
+  color: var(--teal-dark);
+}
+
+.runtime-console__skill-content {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  padding: 22px 26px 28px;
+}
+
+.runtime-console__skill-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 18px;
+  box-shadow: 0 2px 8px rgba(28, 47, 49, 0.03);
+}
+
+.runtime-console__skill-card:first-child {
+  grid-column: 1 / -1;
+}
+
+.runtime-console__skill-card h3 {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.runtime-console__skill-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.runtime-console__skill-metrics {
+  border-color: var(--line);
+  font-size: 10px;
+}
+
+.runtime-console__skill-metrics th {
+  background: #f2f6f5;
+  color: var(--muted);
+}
+
+.runtime-console__skill-metrics td,
+.runtime-console__skill-metrics th {
+  border-color: var(--line);
+  padding: 9px 10px;
+}
+
+@media (max-width: 1180px) {
+  .runtime-console__grid { grid-template-columns: 230px minmax(420px, 1fr) 270px; }
+}
+
+@media (max-width: 760px) {
+  .runtime-console__grid,
+  .runtime-console__skill-layout {
+    width: 100%;
+    margin-top: 0;
+    border-right: 0;
+    border-left: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .runtime-console__workspace-header,
+  .runtime-console__skill-header,
+  .runtime-console__timeline-panel,
+  .runtime-console__report,
+  .runtime-console__skill-content { padding: 18px; }
+
+  .runtime-console__skill-tabs { padding: 0 18px; overflow-x: auto; }
+  .runtime-console__skill-content { grid-template-columns: 1fr; }
+  .runtime-console__skill-card:first-child { grid-column: auto; }
+}
